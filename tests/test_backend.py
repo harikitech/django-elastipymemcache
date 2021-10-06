@@ -27,33 +27,29 @@ def test_split_servers(get_cluster_info):
     get_cluster_info.return_value = {
         'nodes': servers
     }
-    backend._lib.Client = Mock()
+    backend._class = Mock()
     assert backend._cache
     get_cluster_info.assert_called()
-    backend._lib.Client.assert_called_once_with(
-        servers,
-        ignore_exc=True,
-    )
+    backend._class.assert_called_once()
+    eq_(backend._class.call_args[0], (servers,))
 
 
 @patch.object(ConfigurationEndpointClient, 'get_cluster_info')
 def test_node_info_cache(get_cluster_info):
     from django_elastipymemcache.backend import ElastiPymemcache
-    servers = ['h1:0', 'h2:0']
+    servers = [('h1', 0), ('h2', 0)]
     get_cluster_info.return_value = {
         'nodes': servers
     }
 
     backend = ElastiPymemcache('h:0', {})
-    backend._lib.Client = Mock()
+    backend._class = Mock()
     backend.set('key1', 'val')
     backend.get('key1')
     backend.set('key2', 'val')
     backend.get('key2')
-    backend._lib.Client.assert_called_once_with(
-        servers,
-        ignore_exc=True,
-    )
+    backend._class.assert_called_once()
+    eq_(backend._class.call_args[0], (servers,))
     eq_(backend._cache.get.call_count, 2)
     eq_(backend._cache.set.call_count, 2)
 
@@ -65,19 +61,19 @@ def test_failed_to_connect_servers(get_cluster_info):
     from django_elastipymemcache.backend import ElastiPymemcache
     backend = ElastiPymemcache('h:0', {})
     get_cluster_info.side_effect = OSError()
-    eq_(backend.get_cluster_nodes(), [])
+    eq_(backend.client_servers, [])
 
 
 @patch.object(ConfigurationEndpointClient, 'get_cluster_info')
 def test_invalidate_cache(get_cluster_info):
     from django_elastipymemcache.backend import ElastiPymemcache
-    servers = ['h1:0', 'h2:0']
+    servers = [('h1', 0), ('h2', 0)]
     get_cluster_info.return_value = {
         'nodes': servers
     }
 
     backend = ElastiPymemcache('h:0', {})
-    backend._lib.Client = Mock()
+    # backend._class = Mock()
     assert backend._cache
     backend._cache.get = Mock()
     backend._cache.get.side_effect = Exception()
@@ -85,14 +81,17 @@ def test_invalidate_cache(get_cluster_info):
         backend.get('key1', 'val')
     except Exception:
         pass
-    #  invalidate cached client
-    container = getattr(backend, '_local', backend)
-    container._client = None
+    # This should have removed the _cache instance
+    assert '_cache' not in backend.__dict__
+    # Again
+    backend._cache.get = Mock()
+    backend._cache.get.side_effect = Exception()
     try:
         backend.get('key1', 'val')
     except Exception:
         pass
-    eq_(backend._cache.get.call_count, 2)
+    assert '_cache' not in backend.__dict__
+    assert backend._cache
     eq_(get_cluster_info.call_count, 3)
 
 
@@ -100,7 +99,7 @@ def test_invalidate_cache(get_cluster_info):
 def test_client_add(get_cluster_info):
     from django_elastipymemcache.backend import ElastiPymemcache
 
-    servers = ['h1:0', 'h2:0']
+    servers = [('h1', 0), ('h2', 0)]
     get_cluster_info.return_value = {
         'nodes': servers
     }
@@ -114,7 +113,7 @@ def test_client_add(get_cluster_info):
 def test_client_delete(get_cluster_info):
     from django_elastipymemcache.backend import ElastiPymemcache
 
-    servers = ['h1:0', 'h2:0']
+    servers = [('h1', 0), ('h2', 0)]
     get_cluster_info.return_value = {
         'nodes': servers
     }
@@ -131,7 +130,7 @@ def test_client_delete(get_cluster_info):
 def test_client_get_many(get_cluster_info):
     from django_elastipymemcache.backend import ElastiPymemcache
 
-    servers = ['h1:0', 'h2:0']
+    servers = [('h1', 0), ('h2', 0)]
     get_cluster_info.return_value = {
         'nodes': servers
     }
@@ -154,8 +153,8 @@ def test_client_get_many(get_cluster_info):
         ret = backend.get_many(['key3'])
         eq_(ret, {'key3': 1509111630.048594})
 
-    # If False value is included, ignore it.
-    with patch('pymemcache.client.hash.HashClient.get_many') as p:
+    # If False value is included, include it.
+    with patch('pymemcache.client.hash.HashClient.get_multi') as p:
         p.return_value = {
             ':1:key1': 1509111630.048594,
             ':1:key2': False,
@@ -166,20 +165,22 @@ def test_client_get_many(get_cluster_info):
             ret,
             {
                 'key1': 1509111630.048594,
+                'key2': False,
                 'key3': 1509111630.058594
             },
         )
 
-    with patch('pymemcache.client.hash.HashClient.get_many') as p:
+    # Even None is valid. Only key not found is not returned.
+    with patch('pymemcache.client.hash.HashClient.get_multi') as p:
         p.return_value = {
             ':1:key1': None,
             ':1:key2': 1509111630.048594,
-            ':1:key3': False,
         }
         ret = backend.get_many(['key1', 'key2', 'key3'])
         eq_(
             ret,
             {
+                'key1': None,
                 'key2': 1509111630.048594,
             },
         )
@@ -189,7 +190,7 @@ def test_client_get_many(get_cluster_info):
 def test_client_set_many(get_cluster_info):
     from django_elastipymemcache.backend import ElastiPymemcache
 
-    servers = ['h1:0', 'h2:0']
+    servers = [('h1', 0), ('h2', 0)]
     get_cluster_info.return_value = {
         'nodes': servers
     }
@@ -203,7 +204,7 @@ def test_client_set_many(get_cluster_info):
 def test_client_delete_many(get_cluster_info):
     from django_elastipymemcache.backend import ElastiPymemcache
 
-    servers = ['h1:0', 'h2:0']
+    servers = [('h1', 0), ('h2', 0)]
     get_cluster_info.return_value = {
         'nodes': servers
     }
@@ -217,7 +218,7 @@ def test_client_delete_many(get_cluster_info):
 def test_client_incr(get_cluster_info):
     from django_elastipymemcache.backend import ElastiPymemcache
 
-    servers = ['h1:0', 'h2:0']
+    servers = [('h1', 0), ('h2', 0)]
     get_cluster_info.return_value = {
         'nodes': servers
     }
@@ -231,7 +232,7 @@ def test_client_incr(get_cluster_info):
 def test_client_decr(get_cluster_info):
     from django_elastipymemcache.backend import ElastiPymemcache
 
-    servers = ['h1:0', 'h2:0']
+    servers = [('h1', 0), ('h2', 0)]
     get_cluster_info.return_value = {
         'nodes': servers
     }

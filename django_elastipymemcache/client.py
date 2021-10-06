@@ -26,10 +26,7 @@ class ConfigurationEndpointClient(Client):
         nodes = []
         for raw_node in raw_nodes.split(b' '):
             host, ip, port = raw_node.split(b'|')
-            nodes.append('{host}:{port}'.format(
-                host=smart_text(ip or host),
-                port=int(port)
-            ))
+            nodes.append((smart_text(ip or host), int(port)))
         return {
             'version': int(raw_version),
             'nodes': nodes,
@@ -69,11 +66,9 @@ class ConfigurationEndpointClient(Client):
                 logger.warn('Failed to get cluster: %s', e)
                 return {
                     'version': None,
-                    'nodes': [
-                        '{host}:{port:d}'.format(
-                            host=self.server[0],
-                            port=int(self.server[1]),
-                        ),
-                    ]
+                    'nodes': [(
+                        self.server[0],
+                        int(self.server[1]),
+                    )]
                 }
             raise

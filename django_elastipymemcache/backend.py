@@ -6,8 +6,7 @@ import socket
 from functools import wraps
 
 from django.core.cache import InvalidCacheBackendError
-from django.core.cache.backends.memcached import BaseMemcachedCache
-from djpymemcache import client as djpymemcache_client
+from django.core.cache.backends.memcached import PyMemcacheCache
 
 from .client import ConfigurationEndpointClient
 
@@ -28,29 +27,24 @@ def invalidate_cache_after_error(f):
     return wrapper
 
 
-class ElastiPymemcache(BaseMemcachedCache):
+class ElastiPymemcache(PyMemcacheCache):
     """
     Backend for Amazon ElastiCache (memcached) with auto discovery mode
     it used pymemcache
     """
     def __init__(self, server, params):
-        params['OPTIONS'] = params.get('OPTIONS', {})
-        params['OPTIONS'].setdefault('ignore_exc', True)
 
-        self._cluster_timeout = params['OPTIONS'].pop(
+        super().__init__(server, params)
+
+        self._options.setdefault('ignore_exc', True)
+
+        self._cluster_timeout = self._options.pop(
             'cluster_timeout',
             socket._GLOBAL_DEFAULT_TIMEOUT,
         )
-        self._ignore_cluster_errors = params['OPTIONS'].pop(
+        self._ignore_cluster_errors = self._options.pop(
             'ignore_cluster_errors',
             False,
-        )
-
-        super().__init__(
-            server,
-            params,
-            library=djpymemcache_client,
-            value_not_found_exception=ValueError,
         )
 
         if len(self._servers) > 1:
@@ -74,10 +68,14 @@ class ElastiPymemcache(BaseMemcachedCache):
 
     def clear_cluster_nodes_cache(self):
         """Clear internal cache with list of nodes in cluster"""
-        if hasattr(self, '_client'):
-            del self._client
+        try:
+            del self._cache
+        except AttributeError:
+            # self._cache has not been constructed
+            pass
 
-    def get_cluster_nodes(self):
+    @property
+    def client_servers(self):
         try:
             return self.configuration_endpoint_client \
                 .get_cluster_info()['nodes']
@@ -92,15 +90,6 @@ class ElastiPymemcache(BaseMemcachedCache):
                 e,
             )
             return []
-
-    @property
-    def _cache(self):
-        if getattr(self, '_client', None) is None:
-            self._client = self._lib.Client(
-                self.get_cluster_nodes(),
-                **self._options,
-            )
-        return self._client
 
     @invalidate_cache_after_error
     def add(self, *args, **kwargs):

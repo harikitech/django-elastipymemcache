@@ -6,9 +6,7 @@ python:
   - 3.8
 cache: pip
 env:
-  - DJANGO=2.2
-  - DJANGO=3.0
-  - DJANGO=3.1
+  - DJANGO=3.2
   - DJANGO=dev
 
 matrix:
@@ -38,6 +36,6 @@ deploy:
     repo: harikitech/django-elastipymemcache
     tags: true
     python: 3.8
-    condition: "$DJANGO = 3.0"
+    condition: "$DJANGO = 3.2"
 notifications:
   email: false
