@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 
 import django
 from django.core.cache import InvalidCacheBackendError
+
 from django_elastipymemcache.client import ConfigurationEndpointClient
 
 
@@ -156,7 +157,10 @@ class BackendTestCase(TestCase):
                 ':1:key3': 1509111630.058594,
             }
             ret = backend.get_many(['key1', 'key2', 'key3'])
-            assert ret == {'key1': 1509111630.048594, 'key3': 1509111630.058594}
+            assert ret == {
+                'key1': 1509111630.048594,
+                'key3': 1509111630.058594
+            }
 
         with patch('pymemcache.client.hash.HashClient.get_many') as p:
             p.return_value = {
