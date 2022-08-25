@@ -1,4 +1,5 @@
 import collections
+import socket as s
 from unittest.mock import call, patch
 
 from pymemcache.exceptions import (
@@ -18,12 +19,16 @@ EXAMPLE_RESPONSE = [
 ]
 
 
+@patch('socket.getaddrinfo')
 @patch('socket.socket')
-def test_get_cluster_info(socket):
+def test_get_cluster_info(socket, getaddrinfo):
     recv_bufs = collections.deque([
         b'VERSION 1.4.14\r\n',
     ] + EXAMPLE_RESPONSE)
 
+    getaddrinfo.return_value = [
+        (s.AF_INET, s.SOCK_STREAM, 0, '', ('127.0.0.1', 0)),
+    ]
     client = socket.return_value
     client.recv.side_effect = lambda *args, **kwargs: recv_bufs.popleft()
     cluster_info = ConfigurationEndpointClient(('h', 0)).get_cluster_info()
@@ -37,12 +42,16 @@ def test_get_cluster_info(socket):
     ])
 
 
+@patch('socket.getaddrinfo')
 @patch('socket.socket')
-def test_get_cluster_info_before_1_4_13(socket):
+def test_get_cluster_info_before_1_4_13(socket, getaddrinfo):
     recv_bufs = collections.deque([
         b'VERSION 1.4.13\r\n',
     ] + EXAMPLE_RESPONSE)
 
+    getaddrinfo.return_value = [
+        (s.AF_INET, s.SOCK_STREAM, 0, '', ('127.0.0.1', 0)),
+    ]
     client = socket.return_value
     client.recv.side_effect = lambda *args, **kwargs: recv_bufs.popleft()
     cluster_info = ConfigurationEndpointClient(('h', 0)).get_cluster_info()
@@ -56,21 +65,26 @@ def test_get_cluster_info_before_1_4_13(socket):
     ])
 
 
+@patch('socket.getaddrinfo')
 @patch('socket.socket')
-def test_no_configuration_protocol_support_with_errors(socket):
+def test_no_configuration_protocol_support_with_errors(socket, getaddrinfo):
     with raises(MemcacheUnknownCommandError):
         recv_bufs = collections.deque([
             b'VERSION 1.4.13\r\n',
             b'ERROR\r\n',
         ])
 
+        getaddrinfo.return_value = [
+            (s.AF_INET, s.SOCK_STREAM, 0, '', ('127.0.0.1', 0)),
+        ]
         client = socket.return_value
         client.recv.side_effect = lambda *args, **kwargs: recv_bufs.popleft()
         ConfigurationEndpointClient(('h', 0)).get_cluster_info()
 
 
+@patch('socket.getaddrinfo')
 @patch('socket.socket')
-def test_cannot_parse_version(socket):
+def test_cannot_parse_version(socket, getaddrinfo):
     with raises(MemcacheUnknownError):
         recv_bufs = collections.deque([
             b'VERSION 1.4.34\r\n',
@@ -79,13 +93,17 @@ def test_cannot_parse_version(socket):
             b'END\r\n',
         ])
 
+        getaddrinfo.return_value = [
+            (s.AF_INET, s.SOCK_STREAM, 0, '', ('127.0.0.1', 0)),
+        ]
         client = socket.return_value
         client.recv.side_effect = lambda *args, **kwargs: recv_bufs.popleft()
         ConfigurationEndpointClient(('h', 0)).get_cluster_info()
 
 
+@patch('socket.getaddrinfo')
 @patch('socket.socket')
-def test_cannot_parse_nodes(socket):
+def test_cannot_parse_nodes(socket, getaddrinfo):
     with raises(MemcacheUnknownError):
         recv_bufs = collections.deque([
             b'VERSION 1.4.34\r\n',
@@ -94,19 +112,26 @@ def test_cannot_parse_nodes(socket):
             b'END\r\n',
         ])
 
+        getaddrinfo.return_value = [
+            (s.AF_INET, s.SOCK_STREAM, 0, '', ('127.0.0.1', 0)),
+        ]
         client = socket.return_value
         client.recv.side_effect = lambda *args, **kwargs: recv_bufs.popleft()
         ConfigurationEndpointClient(('h', 0)).get_cluster_info()
 
 
+@patch('socket.getaddrinfo')
 @patch('socket.socket')
-def test_ignore_erros(socket):
+def test_ignore_erros(socket, getaddrinfo):
     recv_bufs = collections.deque([
         b'VERSION 1.4.34\r\n',
         b'fail\nfail\n\r\n',
         b'END\r\n',
     ])
 
+    getaddrinfo.return_value = [
+        (s.AF_INET, s.SOCK_STREAM, 0, '', ('127.0.0.1', 0)),
+    ]
     client = socket.return_value
     client.recv.side_effect = lambda *args, **kwargs: recv_bufs.popleft()
     cluster_info = ConfigurationEndpointClient(

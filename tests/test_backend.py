@@ -171,14 +171,16 @@ class BackendTestCase(TestCase):
             ret = backend.get_many(['key1', 'key2', 'key3'])
             assert ret == {'key2': 1509111630.048594}
 
+    @patch('pymemcache.client.base.Client.set_many')
     @patch.object(ConfigurationEndpointClient, 'get_cluster_info')
-    def test_client_set_many(self, get_cluster_info):
+    def test_client_set_many(self, get_cluster_info, set_many):
         from django_elastipymemcache.backend import ElastiPymemcache
 
         servers = ['h1:0', 'h2:0']
         get_cluster_info.return_value = {
             'nodes': servers
         }
+        set_many.side_effect = [[':1:key1'], [':1:key2']]
 
         backend = ElastiPymemcache('h:0', {})
         ret = backend.set_many({'key1': 'value1', 'key2': 'value2'})
