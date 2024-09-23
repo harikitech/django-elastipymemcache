@@ -1,7 +1,7 @@
 import logging
-from packaging.version import parse
 
 from django.utils.encoding import smart_str
+from packaging.version import parse
 from pymemcache.client.base import Client, _readline
 from pymemcache.exceptions import MemcacheUnknownError
 
