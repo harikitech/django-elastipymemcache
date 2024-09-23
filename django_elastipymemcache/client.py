@@ -1,5 +1,5 @@
 import logging
-from distutils.version import StrictVersion
+from packaging.version import parse
 
 from django.utils.encoding import smart_str
 from pymemcache.client.base import Client, _readline
@@ -17,7 +17,7 @@ class ConfigurationEndpointClient(Client):
         return client
 
     def _get_cluster_info_cmd(self):
-        if StrictVersion(smart_str(self.version())) < StrictVersion('1.4.14'):
+        if parse(smart_str(self.version())) < parse('1.4.14'):
             return b'get AmazonElastiCache:cluster\r\n'
         return b'config get cluster\r\n'
 
