@@ -1,4 +1,4 @@
-check-manifest==0.48
+check-manifest==0.51
 coverage==6.4.4
 flake8==5.0.4
 isort==5.10.1
