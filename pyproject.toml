@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 [project]
 name = "django-elastipymemcache"
 description = "pymemcache-based Django cache backend for Amazon ElastiCache with auto discovery"
-readme = "README.rst"
+readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT"}
 authors = [
@@ -71,10 +71,12 @@ skip_covered = true
 [tool.ruff]
 line-length = 120
 target-version = "py310"
+
+[tool.ruff.lint]
 extend-select = [
   "I",  # isort
 ]
-lint.ignore = [
+ignore = [
   "E501",  # rely on formatter for wrapping
 ]
 
