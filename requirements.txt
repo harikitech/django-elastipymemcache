@@ -4,5 +4,5 @@ flake8==5.0.4
 isort==5.10.1
 mock==4.0.3
 pymemcache==3.5.2
-pytest==7.1.2
+pytest==8.4.2
 readme-renderer==37.0
