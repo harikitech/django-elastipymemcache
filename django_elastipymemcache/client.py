@@ -95,24 +95,32 @@ class _ConfigurationEndpointClient:
         if not lines:
             raise MemcacheError("ElastiCache discovery: empty response")
         elif len(lines) < 3:
+            logger.warning("ElastiCache discovery: response too short: %r", lines)
             raise MemcacheError(f"ElastiCache discovery: response too short: {len(lines)}")
         elif "END" not in lines:
+            logger.warning("ElastiCache discovery: response missing END token: %r", lines)
             raise MemcacheError("ElastiCache discovery: response missing END token")
 
-        membership_lines = lines[lines.index("END") - 1]
-        if not membership_lines:
+        membership_line = lines[lines.index("END") - 1]
+        if not membership_line:
+            logger.warning("ElastiCache discovery: no membership line in response: %r", lines)
             raise MemcacheError("ElastiCache discovery: no membership line found")
 
         nodes: list[tuple[str, int]] = []
-        for token in membership_lines.split(" "):
+        for token in membership_line.split(" "):
             try:
                 host, ip, port = token.split("|")
             except ValueError:
+                logger.warning("ElastiCache discovery: bad node format in token: %r", token)
                 continue
 
             addr = self._use_vpc_ip_address and ip or host
             nodes.append((addr, int(port)))
         if not nodes:
+            logger.warning(
+                "ElastiCache discovery: no nodes parsed from response: %r",
+                membership_line,
+            )
             raise MemcacheError("ElastiCache discovery: no nodes parsed")
 
         return nodes
@@ -122,6 +130,7 @@ class _ConfigurationEndpointClient:
         try:
             response = self._raw_config_get_cluster(client)
         except Exception:
+            logger.warning("ElastiCache discovery: config get cluster failed", exc_info=True)
             self._recycle_client()
             raise
         finally:
