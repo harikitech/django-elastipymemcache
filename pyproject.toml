@@ -71,6 +71,15 @@ skip_covered = true
 [tool.ruff]
 line-length = 120
 target-version = "py310"
+src = [
+  "django_elastipymemcache",
+  "tests",
+]
+extend-exclude = [
+  "dist",
+  "build",
+  ".venv",
+]
 
 [tool.ruff.lint]
 extend-select = [
@@ -78,6 +87,11 @@ extend-select = [
 ]
 ignore = [
   "E501",  # rely on formatter for wrapping
+]
+[tool.ruff.lint.isort]
+known-first-party = [
+  "django_elastipymemcache",
+  "tests",
 ]
 
 [tool.ruff.format]
@@ -90,6 +104,10 @@ strict = true
 warn_unused_ignores = true
 warn_redundant_casts = true
 ignore_missing_imports = true
+files = [
+  "django_elastipymemcache",
+  "tests",
+]
 plugins = [
   "mypy_django_plugin.main",
 ]

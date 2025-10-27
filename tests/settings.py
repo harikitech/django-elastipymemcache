@@ -1,5 +1,5 @@
 SECRET_KEY = "test"
-INSTALLED_APPS = []
+INSTALLED_APPS: list[str] = []
 CACHES = {
     "default": {
         "BACKEND": "django_elastipymemcache.backend.ElastiPymemcache",

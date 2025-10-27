@@ -10,6 +10,8 @@ import re
 import socket
 import threading
 import time
+from types import ModuleType
+from typing import Any, Callable, Concatenate, ParamSpec, TypeVar
 
 from django.utils.encoding import force_str
 from pymemcache import MemcacheUnknownCommandError
@@ -37,7 +39,7 @@ class _ConfigurationEndpointClient:
     def __init__(
         self,
         configuration_endpoint: str,
-        default_kwargs: dict | None = None,
+        default_kwargs: dict[str, Any] | None = None,
         use_pooling: bool = False,
         use_vpc_ip_address: bool = True,
     ) -> None:
@@ -80,24 +82,20 @@ class _ConfigurationEndpointClient:
                     self._client = None
 
     def _raw_config_get_cluster(self, client: Client | PooledClient) -> bytes:
-        return client.raw_command(
-            b"config get cluster",
-            end_tokens=b"\n\r\nEND\r\n",
+        return bytes(
+            client.raw_command(
+                b"config get cluster",
+                end_tokens=b"\n\r\nEND\r\n",
+            )
         )
 
-    def _parse_config_get_cluster_response(
-        self, response: bytes
-    ) -> list[tuple[str, int]]:
-        lines = [
-            force_str(line.strip()) for line in response.splitlines() if line.strip()
-        ]
+    def _parse_config_get_cluster_response(self, response: bytes) -> list[tuple[str, int]]:
+        lines = [force_str(line.strip()) for line in response.splitlines() if line.strip()]
 
         if not lines:
             raise MemcacheError("ElastiCache discovery: empty response")
         elif len(lines) < 3:
-            raise MemcacheError(
-                f"ElastiCache discovery: response too short: {len(lines)}"
-            )
+            raise MemcacheError(f"ElastiCache discovery: response too short: {len(lines)}")
         elif "END" not in lines:
             raise MemcacheError("ElastiCache discovery: response missing END token")
 
@@ -139,39 +137,54 @@ class _ConfigurationEndpointClient:
         self._recycle_client()
 
 
-def _retry_refresh_clients(method):
-    def wrapped(self, *args, **kwargs):
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+def _retry_refresh_clients(
+    method: Callable[Concatenate["AWSElastiCacheClient", P], R],
+) -> Callable[Concatenate["AWSElastiCacheClient", P], R]:
+    def wrapped(
+        self: "AWSElastiCacheClient",
+        /,
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> R:
         last_exception: Exception | None = None
 
-        for attempt in range(self.retry_attempts + 1):
+        for _ in range(self.retry_attempts + 1):
             try:
                 return method(self, *args, **kwargs)
             except (MemcacheError, OSError) as exc:
                 last_exception = exc
-                time.sleep(self._discovery_retry_delay)
-                self._refresh_clients(force=True)
+                if getattr(self, "_discovery_retry_delay", 0.0) > 0.0:
+                    time.sleep(self._discovery_retry_delay)
+                try:
+                    self._refresh_clients(force=True)
+                except Exception as refresh_exc:
+                    logger.debug("Discovery refresh failed during retry: %r", refresh_exc)
 
+        assert last_exception is not None
         raise last_exception
 
     return wrapped
 
 
-class AWSElastiCacheClient(HashClient):
+class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
     """ElastiCache-aware HashClient with"""
 
     def __init__(
         self,
         configuration_endpoint: str,
-        *,
         # Data client & behavior
-        hasher: object = RendezvousHash,
+        hasher: type[RendezvousHash] = RendezvousHash,
         serde: object | None = None,
         serializer: object | None = None,
         deserializer: object | None = None,
         connect_timeout: float | None = None,
         timeout: float | None = None,
         no_delay: bool = False,
-        socket_module=socket,
+        socket_module: ModuleType = socket,
         socket_keepalive: object | None = None,
         key_prefix: bytes = b"",
         max_pool_size: int | None = None,
@@ -190,11 +203,10 @@ class AWSElastiCacheClient(HashClient):
         use_vpc_ip_address: bool = True,
         discovery_interval: float | int = 0.0,
         discovery_retry_delay: float | int = 0.0,
-    ):
+    ) -> None:
         if not _AWS_CONFIGURATION_ENDPOINT_PATTERN.fullmatch(configuration_endpoint):
             raise ValueError(
-                f"Invalid configuration endpoint '{configuration_endpoint}' "
-                f"(expected 'host:port' or '[ip]:port')."
+                f"Invalid configuration endpoint '{configuration_endpoint}' (expected 'host:port' or '[ip]:port')."
             )
 
         self.configuration_endpoint: str = configuration_endpoint
@@ -209,8 +221,8 @@ class AWSElastiCacheClient(HashClient):
         self.ignore_exc: bool = ignore_exc
         self.allow_unicode_keys: bool = allow_unicode_keys
 
-        self._failed_clients: dict[str, Client] = {}
-        self._dead_clients: dict[str, Client] = {}
+        self._failed_clients: dict[tuple[str, int], Client] = {}
+        self._dead_clients: dict[tuple[str, int], Client] = {}
         self._last_dead_check_time: float = time.time()
         self.hasher = hasher()
 
@@ -315,6 +327,6 @@ class AWSElastiCacheClient(HashClient):
                 logger.exception("Failed to close during topology refresh")
 
     @_retry_refresh_clients
-    def _get_client(self, key):
+    def _get_client(self, key: str) -> Client | PooledClient:
         self._refresh_clients()
         return super()._get_client(key)
