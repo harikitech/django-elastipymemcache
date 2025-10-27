@@ -122,7 +122,7 @@ path = "django_elastipymemcache/__init__.py"
 include = [
   "django_elastipymemcache",
   "tests",
-  "README.rst",
+  "README.md",
   "LICENSE",
 ]
 
