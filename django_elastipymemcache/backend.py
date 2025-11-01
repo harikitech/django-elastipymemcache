@@ -35,3 +35,13 @@ class ElastiPymemcache(PyMemcacheCache):
             configuration_endpoint=self._endpoint,
             **self._options,  # type: ignore[attr-defined]
         )
+
+    def _safe_close(self, **kwargs: Any) -> None:
+        client = self.__dict__.pop("_cache", None)
+        if not client:
+            return
+
+        try:
+            client.close()
+        except Exception as e:
+            logger.warning("Exception occurred while closing ElastiCache client: %s", e)

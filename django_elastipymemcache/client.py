@@ -70,14 +70,16 @@ class _ConfigurationEndpointClient:
                 self._client = self._new_client()
             return self._client
 
-    def _recycle_client(self) -> None:
-        if not self._use_pooling:
+    def _close_client(self) -> None:
+        if self._use_pooling:
             return
 
         with self._lock:
             if self._client is not None:
                 try:
                     self._client.close()
+                except Exception:
+                    logger.warning("ElastiCache discovery: failed to close client", exc_info=True)
                 finally:
                     self._client = None
 
@@ -94,12 +96,9 @@ class _ConfigurationEndpointClient:
 
         if not lines:
             raise MemcacheError("ElastiCache discovery: empty response")
-        elif len(lines) < 3:
-            logger.warning("ElastiCache discovery: response too short: %r", lines)
-            raise MemcacheError(f"ElastiCache discovery: response too short: {len(lines)}")
-        elif "END" not in lines:
-            logger.warning("ElastiCache discovery: response missing END token: %r", lines)
-            raise MemcacheError("ElastiCache discovery: response missing END token")
+        elif len(lines) < 3 or "END" not in lines:
+            logger.warning("ElastiCache discovery: failed to parse response: %r", lines)
+            raise MemcacheError("ElastiCache discovery: invalid response format")
 
         membership_line = lines[lines.index("END") - 1]
         if not membership_line:
@@ -131,19 +130,18 @@ class _ConfigurationEndpointClient:
             response = self._raw_config_get_cluster(client)
         except Exception:
             logger.warning("ElastiCache discovery: config get cluster failed", exc_info=True)
-            self._recycle_client()
+            self._close_client()
             raise
-        finally:
+        else:
             if not self._use_pooling:
                 try:
                     client.close()
                 except Exception:
-                    pass
+                    logger.warning("ElastiCache discovery: failed to close client", exc_info=True)
 
         return self._parse_config_get_cluster_response(response)
 
-    def close(self) -> None:
-        self._recycle_client()
+    close = _close_client
 
 
 P = ParamSpec("P")
@@ -170,8 +168,8 @@ def _retry_refresh_clients(
                     time.sleep(self._discovery_retry_delay)
                 try:
                     self._refresh_clients(force=True)
-                except Exception as refresh_exc:
-                    logger.debug("Discovery refresh failed during retry: %r", refresh_exc)
+                except Exception as e:
+                    logger.debug("Discovery refresh failed during retry: %r", e)
 
         assert last_exception is not None
         raise last_exception
@@ -339,3 +337,15 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
     def _get_client(self, key: str) -> Client | PooledClient:
         self._refresh_clients()
         return super()._get_client(key)
+
+    def close(self) -> None:
+        if self._configuration_endpoint_client:
+            try:
+                self._configuration_endpoint_client.close()
+            except Exception:
+                logger.warning(
+                    "Exception occurred while closing configuration endpoint client",
+                    exc_info=True,
+                )
+        if not self.use_pooling:
+            super().close()
