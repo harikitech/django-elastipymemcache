@@ -1,0 +1,132 @@
+[build-system]
+requires = [
+  "hatchling>=1.25",
+]
+build-backend = "hatchling.build"
+
+[project]
+name = "django-elastipymemcache"
+description = "pymemcache-based Django cache backend for Amazon ElastiCache with auto discovery"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT"}
+authors = [
+  { name = "Contributors" },
+]
+keywords = [
+  "django",
+  "cache",
+  "memcached",
+  "elasticache",
+  "pymemcache",
+]
+classifiers = [
+  "Framework :: Django",
+  "Framework :: Django :: 4.2",
+  "Framework :: Django :: 5.1",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "pymemcache>=4.0",
+  "Django>=4.2",
+]
+dynamic = [
+  "version",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-django>=4.11",
+  "coverage[toml]>=7.11",
+  "ruff>=0.14.1",
+  "mypy>=1.18",
+  "django-stubs[compatible-mypy]>=4.2",
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra -q --strict-markers --disable-warnings --maxfail=1"
+testpaths = [
+  "tests",
+]
+python_files = [
+  "test_*.py",
+]
+DJANGO_SETTINGS_MODULE = "tests.settings"
+
+[tool.coverage.run]
+branch = true
+source = [
+  "django_elastipymemcache",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+src = [
+  "django_elastipymemcache",
+  "tests",
+]
+extend-exclude = [
+  "dist",
+  "build",
+  ".venv",
+]
+
+[tool.ruff.lint]
+extend-select = [
+  "I",  # isort
+]
+ignore = [
+  "E501",  # rely on formatter for wrapping
+]
+[tool.ruff.lint.isort]
+known-first-party = [
+  "django_elastipymemcache",
+  "tests",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+ignore_missing_imports = true
+files = [
+  "django_elastipymemcache",
+  "tests",
+]
+plugins = [
+  "mypy_django_plugin.main",
+]
+
+[tool.django-stubs]
+django_settings_module = "tests.settings"
+
+[tool.hatch.version]
+path = "django_elastipymemcache/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "django_elastipymemcache",
+  "tests",
+  "README.md",
+  "LICENSE",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = [
+  "django_elastipymemcache",
+]
