@@ -59,6 +59,7 @@ jobs:
       - name: Test (pytest)
         run: uv run pytest --verbose --cov=./django_elastipymemcache --cov-report=xml
       - name: Upload test results to Codecov
+        if: ${{ matrix.python-version == '3.14' && matrix.django-version == '5.2' }}
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
