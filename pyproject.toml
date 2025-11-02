@@ -30,21 +30,22 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 dependencies = [
-  "pymemcache>=4.0",
   "Django>=4.2",
+  "pymemcache>=4.0",
 ]
 dynamic = [
   "version",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
-  "pytest>=8.0",
-  "pytest-django>=4.11",
   "coverage[toml]>=7.11",
-  "ruff>=0.14.1",
-  "mypy>=1.18",
   "django-stubs[compatible-mypy]>=4.2",
+  "mypy>=1.18",
+  "pytest>=8.0",
+  "pytest-cov>=7.0.0",
+  "pytest-django>=4.11",
+  "ruff>=0.14.1",
 ]
 
 [tool.pytest.ini_options]
