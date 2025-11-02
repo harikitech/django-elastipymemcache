@@ -7,17 +7,14 @@ Copy from: https://github.com/pinterest/pymemcache/blob/master/pymemcache/client
 import logging
 import random
 import re
-import socket
 import threading
 import time
-from types import ModuleType
 from typing import Any, Callable, Concatenate, ParamSpec, TypeVar
 
 from django.utils.encoding import force_str
 from pymemcache import MemcacheUnknownCommandError
 from pymemcache.client import Client, PooledClient, RetryingClient
 from pymemcache.client.hash import HashClient
-from pymemcache.client.rendezvous import RendezvousHash
 from pymemcache.exceptions import MemcacheError
 
 logger = logging.getLogger(__name__)
@@ -70,8 +67,8 @@ class _ConfigurationEndpointClient:
                 self._client = self._new_client()
             return self._client
 
-    def _close_client(self) -> None:
-        if self._use_pooling:
+    def _close_client(self, force: bool = False) -> None:
+        if not force and self._use_pooling:
             return
 
         with self._lock:
@@ -130,14 +127,10 @@ class _ConfigurationEndpointClient:
             response = self._raw_config_get_cluster(client)
         except Exception:
             logger.warning("ElastiCache discovery: config get cluster failed", exc_info=True)
-            self._close_client()
+            self._close_client(force=True)
             raise
         else:
-            if not self._use_pooling:
-                try:
-                    client.close()
-                except Exception:
-                    logger.warning("ElastiCache discovery: failed to close client", exc_info=True)
+            self._close_client()
 
         return self._parse_config_get_cluster_response(response)
 
@@ -183,84 +176,28 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
     def __init__(
         self,
         configuration_endpoint: str,
-        # Data client & behavior
-        hasher: type[RendezvousHash] = RendezvousHash,
-        serde: object | None = None,
-        serializer: object | None = None,
-        deserializer: object | None = None,
-        connect_timeout: float | None = None,
-        timeout: float | None = None,
-        no_delay: bool = False,
-        socket_module: ModuleType = socket,
-        socket_keepalive: object | None = None,
-        key_prefix: bytes = b"",
-        max_pool_size: int | None = None,
-        pool_idle_timeout: int = 0,
-        lock_generator: object | None = None,
-        retry_attempts: int = 2,
-        retry_timeout: int = 1,
-        dead_timeout: int = 60,
+        # pymemcache.HashClient params
         use_pooling: bool = False,
-        ignore_exc: bool = False,
-        allow_unicode_keys: bool = False,
-        default_noreply: bool = True,
-        encoding: str = "ascii",
-        tls_context: object | None = None,
+        retry_attempts: int = 2,
         # Discovery & topology management
         use_vpc_ip_address: bool = True,
         discovery_interval: float | int = 0.0,
         discovery_retry_delay: float | int = 0.0,
+        **kwargs: Any,
     ) -> None:
         if not _AWS_CONFIGURATION_ENDPOINT_PATTERN.fullmatch(configuration_endpoint):
             raise ValueError(
                 f"Invalid configuration endpoint '{configuration_endpoint}' (expected 'host:port' or '[ip]:port')."
             )
 
+        super().__init__(
+            servers=[],
+            use_pooling=use_pooling,
+            retry_attempts=retry_attempts,
+            **kwargs,
+        )
+
         self.configuration_endpoint: str = configuration_endpoint
-
-        # HashClient core fields (names, semantics)
-        self.clients: dict[str, Client] = {}
-        self.retry_attempts: int = retry_attempts
-        self.retry_timeout: int = retry_timeout
-        self.dead_timeout: int = dead_timeout
-        self.use_pooling: bool = use_pooling
-        self.key_prefix: bytes = key_prefix
-        self.ignore_exc: bool = ignore_exc
-        self.allow_unicode_keys: bool = allow_unicode_keys
-
-        self._failed_clients: dict[tuple[str, int], Client] = {}
-        self._dead_clients: dict[tuple[str, int], Client] = {}
-        self._last_dead_check_time: float = time.time()
-        self.hasher = hasher()
-
-        self.default_kwargs = {
-            "connect_timeout": connect_timeout,
-            "timeout": timeout,
-            "no_delay": no_delay,
-            "socket_module": socket_module,
-            "socket_keepalive": socket_keepalive,
-            "key_prefix": key_prefix,
-            "serde": serde,
-            "serializer": serializer,
-            "deserializer": deserializer,
-            "allow_unicode_keys": allow_unicode_keys,
-            "default_noreply": default_noreply,
-            "encoding": encoding,
-            "tls_context": tls_context,
-        }
-
-        if use_pooling:
-            self.default_kwargs.update(
-                {
-                    "max_pool_size": max_pool_size,
-                    "pool_idle_timeout": pool_idle_timeout,
-                    "lock_generator": lock_generator,
-                }
-            )
-
-        self.encoding = encoding
-        self.tls_context = tls_context
-
         configuration_endpoint_client = _ConfigurationEndpointClient(
             configuration_endpoint,
             default_kwargs=self.default_kwargs,
@@ -274,6 +211,7 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
             retry_delay=discovery_retry_delay,
             do_not_retry_for=(MemcacheUnknownCommandError,),
         )
+
         self._use_auto_discovery = bool(discovery_interval)
         self._discovery_interval = (
             self._use_auto_discovery
@@ -290,8 +228,12 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
             logger.exception(f"Initial discovery failed: {e}")
 
     def _discover_client_keys(self) -> set[str]:
-        node = self._configuration_endpoint_client.config_get_cluster()
-        return set(map(self._make_client_key, node))
+        try:
+            node = self._configuration_endpoint_client.config_get_cluster()
+            return set(map(self._make_client_key, node))
+        except MemcacheError:
+            logger.warning("ElastiCache discovery: cluster discovery failed.")
+            return set()
 
     def _refresh_clients(self, force: bool = False) -> None:
         if not force and not self._use_auto_discovery:
@@ -338,14 +280,24 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
         self._refresh_clients()
         return super()._get_client(key)
 
-    def close(self) -> None:
-        if self._configuration_endpoint_client:
-            try:
-                self._configuration_endpoint_client.close()
-            except Exception:
-                logger.warning(
-                    "Exception occurred while closing configuration endpoint client",
-                    exc_info=True,
-                )
-        if not self.use_pooling:
+    def _close_clients(self) -> None:
+        if self.use_pooling:
+            return
+
+        try:
             super().close()
+        except Exception:
+            logger.warning("Exception occurred while closing ElastiCache client", exc_info=True)
+
+    def _close_configuration_endpoint_client(self) -> None:
+        if not self._configuration_endpoint_client:
+            return
+
+        try:
+            self._configuration_endpoint_client.close()
+        except Exception:
+            logger.warning("Exception occurred while closing configuration endpoint client", exc_info=True)
+
+    def close(self) -> None:
+        self._close_clients()
+        self._close_configuration_endpoint_client()
