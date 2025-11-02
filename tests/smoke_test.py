@@ -10,6 +10,16 @@ def test_backend_importable() -> None:
     assert ElastiPymemcache is not None
 
 
+def test_client_importable() -> None:
+    from django_elastipymemcache.client import (
+        AWSElastiCacheClient,
+        _ConfigurationEndpointClient,
+    )
+
+    assert AWSElastiCacheClient is not None
+    assert _ConfigurationEndpointClient is not None
+
+
 def test_client_basic() -> None:
     from django_elastipymemcache.client import _ConfigurationEndpointClient
 
