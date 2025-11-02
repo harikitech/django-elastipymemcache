@@ -105,3 +105,28 @@ The backend accepts a combination of **ElastiPymemcache-specific options** and
   This helps recover after scale events.
 - If you use TLS, pass the appropriate `tls_context` through `OPTIONS` (this is a pymemcache option)
   and ensure your ElastiCache cluster supports TLS.
+
+## Notice
+
+### Datadog `ddtrace` & `pymemcache` instrumentation (temporary workaround)
+
+When using `ddtrace` with Django or other frameworks, enabling the `pymemcache` integration may trigger runtime errors such as:
+
+```text
+ValueError: wrapper has not been initialized
+```
+
+This issue occurs due to `wrapt` interfering with class initialization order inside `ddtrace`’s `pymemcache` integration.
+Until Datadog releases a fix, disable the `pymemcache` tracer.
+
+#### Environment variable
+
+```sh
+DD_TRACE_PYMEMCACHE_ENABLED=false
+```
+
+#### Code-level patch
+
+```python
+patch_all(pymemcache=False)
+```

@@ -80,6 +80,8 @@ class _ConfigurationEndpointClient:
                 finally:
                     self._client = None
 
+    close = _close_client
+
     def _raw_config_get_cluster(self, client: Client | PooledClient) -> bytes:
         return bytes(
             client.raw_command(
@@ -89,19 +91,21 @@ class _ConfigurationEndpointClient:
         )
 
     def _parse_config_get_cluster_response(self, response: bytes) -> list[tuple[str, int]]:
-        lines = [force_str(line.strip()) for line in response.splitlines() if line.strip()]
-
+        lines = [force_str(line).strip() for line in response.splitlines() if force_str(line).strip()]
         if not lines:
             raise MemcacheError("ElastiCache discovery: empty response")
-        elif len(lines) < 3 or "END" not in lines:
-            logger.warning("ElastiCache discovery: failed to parse response: %r", lines)
-            raise MemcacheError("ElastiCache discovery: invalid response format")
+        elif len(lines) < 2:
+            raise MemcacheError(f"ElastiCache discovery: unexpected response: {lines}")
 
-        membership_line = lines[lines.index("END") - 1]
-        if not membership_line:
-            logger.warning("ElastiCache discovery: no membership line in response: %r", lines)
-            raise MemcacheError("ElastiCache discovery: no membership line found")
+        header, version, *body = lines
+        if not header.lower().startswith("config cluster"):
+            raise MemcacheError(f"ElastiCache discovery: invalid header: {header}")
+        elif not version.isdigit():
+            raise MemcacheError(f"ElastiCache discovery: invalid version line: {version}")
+        elif not body:
+            raise MemcacheError("ElastiCache discovery: empty body")
 
+        membership_line = " ".join(body)
         nodes: list[tuple[str, int]] = []
         for token in membership_line.split(" "):
             try:
@@ -112,10 +116,10 @@ class _ConfigurationEndpointClient:
 
             addr = self._use_vpc_ip_address and ip or host
             nodes.append((addr, int(port)))
+
         if not nodes:
             logger.warning(
-                "ElastiCache discovery: no nodes parsed from response: %r",
-                membership_line,
+                f"ElastiCache discovery: no nodes parsed from response: {body!r}",
             )
             raise MemcacheError("ElastiCache discovery: no nodes parsed")
 
@@ -133,8 +137,6 @@ class _ConfigurationEndpointClient:
             self._close_client()
 
         return self._parse_config_get_cluster_response(response)
-
-    close = _close_client
 
 
 P = ParamSpec("P")
