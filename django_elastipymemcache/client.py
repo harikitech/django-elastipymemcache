@@ -193,7 +193,7 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
             )
 
         super().__init__(
-            servers=[],
+            servers=[],  # Discovery after initialization
             use_pooling=use_pooling,
             retry_attempts=retry_attempts,
             **kwargs,
@@ -298,7 +298,10 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
         try:
             self._configuration_endpoint_client.close()
         except Exception:
-            logger.warning("Exception occurred while closing configuration endpoint client", exc_info=True)
+            logger.warning(
+                "Exception occurred while closing configuration endpoint client",
+                exc_info=True,
+            )
 
     def close(self) -> None:
         self._close_clients()
