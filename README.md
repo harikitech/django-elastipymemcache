@@ -1,6 +1,6 @@
 # django-elastipymemcache
 
-[![Coverage](https://codecov.io/gh/harikitech/django-elastipymemcache/branch/master/graph/badge.svg)](https://codecov.io/gh/harikitech/django-elastipymemcache)
+[![codecov](https://codecov.io/github/harikitech/django-elastipymemcache/graph/badge.svg?token=QJGzpfbkCv)](https://codecov.io/github/harikitech/django-elastipymemcache)
 
 ## Overview
 
