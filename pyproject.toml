@@ -1,6 +1,7 @@
 [build-system]
 requires = [
   "hatchling>=1.25",
+  "hatch-vcs>=0.5.0",
 ]
 build-backend = "hatchling.build"
 
@@ -117,7 +118,7 @@ plugins = [
 django_settings_module = "tests.settings"
 
 [tool.hatch.version]
-path = "django_elastipymemcache/__init__.py"
+source = "vcs"
 
 [tool.hatch.build.targets.sdist]
 include = [

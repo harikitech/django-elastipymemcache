@@ -2,6 +2,9 @@ def test_import_and_version() -> None:
     import django_elastipymemcache
 
     assert hasattr(django_elastipymemcache, "__version__")
+    assert django_elastipymemcache.__version__ != "unknown"
+    assert hasattr(django_elastipymemcache, "__version__tuple__")
+    assert django_elastipymemcache.__version_tuple__ != ()
 
 
 def test_backend_importable() -> None:
