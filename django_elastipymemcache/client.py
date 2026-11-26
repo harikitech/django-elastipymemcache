@@ -39,6 +39,7 @@ class _ConfigurationEndpointClient:
         default_kwargs: dict[str, Any] | None = None,
         use_pooling: bool = False,
         use_vpc_ip_address: bool = True,
+        keep_connection: bool | None = None,
     ) -> None:
         self.configuration_endpoint = configuration_endpoint
         host, port = self.configuration_endpoint.rsplit(":", 1)
@@ -46,6 +47,8 @@ class _ConfigurationEndpointClient:
 
         self._default_kwargs = default_kwargs or {}
         self._use_pooling = bool(use_pooling)
+        # None keeps the pooled connection open between queries, which was the only behavior before this option.
+        self._keep_connection = self._use_pooling if keep_connection is None else bool(keep_connection)
         self._use_vpc_ip_address = use_vpc_ip_address
 
         self._lock = threading.Lock()
@@ -134,7 +137,7 @@ class _ConfigurationEndpointClient:
             self._close_client(force=True)
             raise
         else:
-            self._close_client()
+            self._close_client(force=not self._keep_connection)
 
         return self._parse_config_get_cluster_response(response)
 
@@ -205,6 +208,8 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
             default_kwargs=self.default_kwargs,
             use_pooling=use_pooling,
             use_vpc_ip_address=use_vpc_ip_address,
+            # Only periodic discovery queries the endpoint again, so without it the connection would sit unused.
+            keep_connection=bool(discovery_interval),
         )
 
         self._configuration_endpoint_client = RetryingClient(
