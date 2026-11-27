@@ -285,3 +285,103 @@ def test_remove_server_waits_for_retry_dead(mock_discovery: Callable[[list[tuple
 
     assert removed.wait(1)
     assert set(client._dead_clients) == {NODE_2}
+
+
+def test_failure_after_refresh_does_not_revive_removed_node(two_node_client: AWSElastiCacheClient) -> None:
+    two_node_client._refresh_clients(force=True)
+
+    two_node_client._mark_failed_server(NODE_1)
+    two_node_client.remove_server(NODE_1)
+
+    assert NODE_1 not in two_node_client._failed_clients
+    assert NODE_1 not in two_node_client._dead_clients
+
+
+def test_remove_server_twice(two_node_client: AWSElastiCacheClient) -> None:
+    two_node_client._failed_clients[NODE_1] = {"failed_time": 0.0, "attempts": 2}
+
+    two_node_client.remove_server(NODE_1)
+    two_node_client.remove_server(NODE_1)
+
+    assert set(two_node_client._dead_clients) == {NODE_1}
+    assert "10.0.0.1:11211" not in two_node_client.hasher.nodes
+
+
+@pytest.fixture
+def failed_node_client(mock_discovery: Callable[[list[tuple[str, int]]], None]) -> AWSElastiCacheClient:
+    mock_discovery([NODE_1])
+    client = make_client(use_pooling=True, socket_module=FakeSocketModule([b"VALUE key 0 5\r\nvalue\r\nEND\r\n"]))
+    client._failed_clients[NODE_1] = {"failed_time": 0.0, "attempts": 0}
+    return client
+
+
+def test_failed_node_recovered_by_another_thread(
+    monkeypatch: MonkeyPatch,
+    failed_node_client: AWSElastiCacheClient,
+) -> None:
+    node = failed_node_client.clients["10.0.0.1:11211"]
+    get = node.get
+
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        failed_node_client._failed_clients.pop(NODE_1)
+        return get(*args, **kwargs)
+
+    monkeypatch.setattr(node, "get", wrapped)
+
+    assert failed_node_client.get("key") == b"value"
+
+
+def test_failed_node_entry_removed_after_check(failed_node_client: AWSElastiCacheClient) -> None:
+    class RacingFailedClients(type(failed_node_client._failed_clients)):  # type: ignore[misc]
+        def __contains__(self, key: object) -> bool:
+            found = super().__contains__(key)
+            self.pop(key)
+            return found
+
+    failed_node_client._failed_clients = RacingFailedClients(failed_node_client._failed_clients)
+
+    assert failed_node_client.get("key") == b"value"
+
+
+def test_refresh_skips_when_another_thread_refreshed(
+    monkeypatch: MonkeyPatch,
+    mock_discovery: Callable[[list[tuple[str, int]]], None],
+) -> None:
+    mock_discovery([NODE_1])
+    client = make_client(use_pooling=True)
+    discovering = threading.Event()
+    release = threading.Event()
+    waiting = threading.Event()
+    calls = []
+
+    def config_get_cluster(self: Any) -> list[tuple[str, int]]:
+        calls.append(threading.current_thread())
+        discovering.set()
+        release.wait(1)
+        return [NODE_1]
+
+    monkeypatch.setattr(
+        "django_elastipymemcache.client._ConfigurationEndpointClient.config_get_cluster",
+        config_get_cluster,
+    )
+    first = threading.Thread(target=client._refresh_clients, kwargs={"force": True})
+    second = threading.Thread(target=client._refresh_clients, kwargs={"force": True})
+    monotonic = time.monotonic
+
+    def wrapped_monotonic() -> float:
+        value = monotonic()
+        if threading.current_thread() is second:
+            waiting.set()
+        return value
+
+    monkeypatch.setattr(time, "monotonic", wrapped_monotonic)
+
+    first.start()
+    assert discovering.wait(1)
+    second.start()
+    assert waiting.wait(1)
+    release.set()
+    first.join(1)
+    second.join(1)
+
+    assert calls == [first]

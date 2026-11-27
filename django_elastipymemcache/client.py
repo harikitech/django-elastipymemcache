@@ -143,6 +143,15 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 
+class _FailedClients(dict[Any, dict[str, Any]]):
+    # HashClient checks an entry and then reads or pops it without a lock, so another thread may remove it in between.
+    def __missing__(self, key: Any) -> dict[str, Any]:
+        return {"failed_time": 0.0, "attempts": 0}
+
+    def pop(self, key: Any, default: Any = None) -> Any:
+        return super().pop(key, default)
+
+
 def _retry_refresh_clients(
     method: Callable[Concatenate["AWSElastiCacheClient", P], R],
 ) -> Callable[Concatenate["AWSElastiCacheClient", P], R]:
@@ -199,6 +208,7 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
             **kwargs,
         )
 
+        self._failed_clients = _FailedClients()
         self.configuration_endpoint: str = configuration_endpoint
         configuration_endpoint_client = _ConfigurationEndpointClient(
             configuration_endpoint,
@@ -223,7 +233,7 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
         )
         self._discovery_retry_delay = float(discovery_retry_delay)
         self._last_discovery_time: float = 0.0
-        self._topology_lock = threading.Lock()
+        self._topology_lock = threading.RLock()
         try:
             self._refresh_clients(force=True)
         except Exception as e:
@@ -248,6 +258,10 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
         old_clients: list[Client | PooledClient] = []
 
         with self._topology_lock:
+            if self._last_discovery_time > now:
+                # Another thread refreshed while this one was waiting for the lock.
+                return
+
             current_keys = set(self.clients.keys())
             new_keys = self._discover_client_keys()
 
@@ -269,7 +283,7 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
                 host, port = client_key.split(":", 1)
                 super().add_server((host, int(port)))
 
-            self._last_discovery_time = now
+            self._last_discovery_time = time.monotonic()
 
         for old_client in old_clients:
             try:
@@ -309,6 +323,20 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
     def _retry_dead(self) -> None:
         with self._topology_lock:
             super()._retry_dead()
+
+    def _mark_failed_server(self, server: Any) -> None:
+        with self._topology_lock:
+            if self._make_client_key(server) in self.clients:
+                super()._mark_failed_server(server)
+
+    def remove_server(self, server: Any, port: Any = None) -> None:
+        if port is not None:
+            server = (server, port)
+
+        with self._topology_lock:
+            # Skip nodes already removed by a refresh or marked dead by another thread.
+            if self._make_client_key(server) in self.clients and server not in self._dead_clients:
+                super().remove_server(server)
 
     def flush_all(self, *args: Any, **kwargs: Any) -> None:
         for client in list(self.clients.values()):
