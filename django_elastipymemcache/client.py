@@ -17,7 +17,7 @@ from django.utils.encoding import force_str
 from pymemcache import MemcacheUnknownCommandError
 from pymemcache.client import Client, PooledClient, RetryingClient
 from pymemcache.client.hash import HashClient
-from pymemcache.exceptions import MemcacheError
+from pymemcache.exceptions import MemcacheError, MemcacheIllegalInputError
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +173,8 @@ def _retry_refresh_clients(
         for _ in range(self.retry_attempts + 1):
             try:
                 return method(self, *args, **kwargs)
+            except MemcacheIllegalInputError:
+                raise
             except (MemcacheError, OSError) as exc:
                 last_exception = exc
                 if getattr(self, "_discovery_retry_delay", 0.0) > 0.0:

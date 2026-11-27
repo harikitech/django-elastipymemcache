@@ -254,7 +254,7 @@ def test_get_multi_raises_for_illegal_key(monkeypatch: MonkeyPatch) -> None:
 
     with pytest.raises(MemcacheIllegalInputError):
         client.get_multi(["bad key"])
-    assert config_get_cluster.call_count == 3
+    assert config_get_cluster.call_count == 0
 
 
 def test_flush_all_when_node_removed(monkeypatch: MonkeyPatch, two_node_client: AWSElastiCacheClient) -> None:
