@@ -144,7 +144,8 @@ R = TypeVar("R")
 
 
 class _FailedClients(dict[Any, dict[str, Any]]):
-    # HashClient checks an entry and then reads or pops it without a lock, so another thread may remove it in between.
+    # HashClient._safely_run_func and _safely_run_set_many check an entry and then read or pop it without a lock,
+    # so another thread may remove it in between.
     def __missing__(self, key: Any) -> dict[str, Any]:
         return {"failed_time": 0.0, "attempts": 0}
 
@@ -233,6 +234,7 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
         )
         self._discovery_retry_delay = float(discovery_retry_delay)
         self._last_discovery_time: float = 0.0
+        self._discovery_lock = threading.Lock()
         self._topology_lock = threading.RLock()
         try:
             self._refresh_clients(force=True)
@@ -257,33 +259,35 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
 
         old_clients: list[Client | PooledClient] = []
 
-        with self._topology_lock:
+        with self._discovery_lock:
             if self._last_discovery_time > now:
                 # Another thread refreshed while this one was waiting for the lock.
                 return
 
-            current_keys = set(self.clients.keys())
             new_keys = self._discover_client_keys()
 
-            # remove
-            for client_key in current_keys - new_keys:
-                old_client = self.clients.pop(client_key, None)
-                if old_client:
-                    old_clients.append(old_client)
+            with self._topology_lock:
+                current_keys = set(self.clients.keys())
 
-                self.hasher.remove_node(client_key)
+                # remove
+                for client_key in current_keys - new_keys:
+                    old_client = self.clients.pop(client_key, None)
+                    if old_client:
+                        old_clients.append(old_client)
 
-                host, port = client_key.split(":", 1)
-                server = (host, int(port))
-                self._failed_clients.pop(server, None)
-                self._dead_clients.pop(server, None)
+                    self.hasher.remove_node(client_key)
 
-            # add
-            for client_key in new_keys - current_keys:
-                host, port = client_key.split(":", 1)
-                super().add_server((host, int(port)))
+                    host, port = client_key.split(":", 1)
+                    server = (host, int(port))
+                    self._failed_clients.pop(server, None)
+                    self._dead_clients.pop(server, None)
 
-            self._last_discovery_time = time.monotonic()
+                # add
+                for client_key in new_keys - current_keys:
+                    host, port = client_key.split(":", 1)
+                    super().add_server((host, int(port)))
+
+                self._last_discovery_time = time.monotonic()
 
         for old_client in old_clients:
             try:

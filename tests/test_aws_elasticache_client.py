@@ -1,3 +1,4 @@
+import itertools
 import threading
 import time
 from typing import Any, Callable
@@ -194,10 +195,14 @@ def test_get_multi_when_node_removed(
     two_node_client: AWSElastiCacheClient,
     remove_node: Callable[[MonkeyPatch, AWSElastiCacheClient], None],
 ) -> None:
+    node = two_node_client.clients["10.0.0.2:11211"]
+    get_many = Mock(wraps=node.get_many)
+    monkeypatch.setattr(node, "get_many", get_many)
     remove_node(monkeypatch, two_node_client)
 
     assert two_node_client.get_multi(KEYS) == {}
     assert set(two_node_client.clients) == {"10.0.0.2:11211"}
+    assert sorted(get_many.call_args.args[0]) == sorted(KEYS)
 
 
 @pytest.mark.parametrize("remove_node", [remove_node_during_get_node, remove_node_after_batching])
@@ -206,10 +211,14 @@ def test_set_multi_when_node_removed(
     two_node_client: AWSElastiCacheClient,
     remove_node: Callable[[MonkeyPatch, AWSElastiCacheClient], None],
 ) -> None:
+    node = two_node_client.clients["10.0.0.2:11211"]
+    set_many = Mock(wraps=node.set_many)
+    monkeypatch.setattr(node, "set_many", set_many)
     remove_node(monkeypatch, two_node_client)
 
     assert two_node_client.set_multi(dict.fromkeys(KEYS, "value")) == []
     assert set(two_node_client.clients) == {"10.0.0.2:11211"}
+    assert sorted(set_many.call_args.args[0]) == sorted(KEYS)
 
 
 def test_multi_aliases_use_overridden_methods() -> None:
@@ -385,3 +394,77 @@ def test_refresh_skips_when_another_thread_refreshed(
     second.join(1)
 
     assert calls == [first]
+
+
+def test_get_client_is_not_blocked_by_discovery(
+    monkeypatch: MonkeyPatch,
+    two_node_client: AWSElastiCacheClient,
+) -> None:
+    two_node_client._failed_clients[NODE_1] = {"failed_time": 0.0, "attempts": 2}
+    two_node_client.remove_server(NODE_1)
+    discovering = threading.Event()
+    release = threading.Event()
+
+    def config_get_cluster(self: Any) -> list[tuple[str, int]]:
+        discovering.set()
+        release.wait(5)
+        return [NODE_1, NODE_2]
+
+    monkeypatch.setattr(
+        "django_elastipymemcache.client._ConfigurationEndpointClient.config_get_cluster",
+        config_get_cluster,
+    )
+    refresh = threading.Thread(target=two_node_client._refresh_clients, kwargs={"force": True})
+    refresh.start()
+    try:
+        assert discovering.wait(1)
+        clients: list[Client | PooledClient] = []
+        lookup = threading.Thread(target=lambda: clients.append(two_node_client._get_client("key")))
+        lookup.start()
+        lookup.join(0.5)
+
+        assert clients == [two_node_client.clients["10.0.0.2:11211"]]
+    finally:
+        release.set()
+        refresh.join(1)
+
+
+def test_refresh_and_failure_tracking_do_not_deadlock(
+    monkeypatch: MonkeyPatch,
+    two_node_client: AWSElastiCacheClient,
+) -> None:
+    topologies = itertools.cycle([[NODE_1, NODE_2], [NODE_2]])
+    monkeypatch.setattr(
+        "django_elastipymemcache.client._ConfigurationEndpointClient.config_get_cluster",
+        lambda self: next(topologies),
+    )
+    two_node_client.dead_timeout = 0
+    errors: list[Exception] = []
+
+    def repeat(func: Callable[[], None]) -> None:
+        for _ in range(200):
+            try:
+                func()
+            except Exception as e:
+                errors.append(e)
+
+    def fail_node() -> None:
+        two_node_client._mark_failed_server(NODE_1)
+        two_node_client.remove_server(NODE_1)
+
+    def retry_dead() -> None:
+        two_node_client._last_dead_check_time = 0.0
+        two_node_client._retry_dead()
+
+    threads = [
+        threading.Thread(target=repeat, args=(lambda: two_node_client._refresh_clients(force=True),)),
+        threading.Thread(target=repeat, args=(fail_node,)),
+        threading.Thread(target=repeat, args=(retry_dead,)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
