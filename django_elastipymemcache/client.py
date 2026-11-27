@@ -261,9 +261,10 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
 
         with self._discovery_lock:
             if self._last_discovery_time > now:
-                # Another thread refreshed while this one was waiting for the lock.
+                # Another thread started a discovery while this one was waiting for the lock.
                 return
 
+            self._last_discovery_time = time.monotonic()
             new_keys = self._discover_client_keys()
 
             with self._topology_lock:
@@ -286,8 +287,6 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
                 for client_key in new_keys - current_keys:
                     host, port = client_key.split(":", 1)
                     super().add_server((host, int(port)))
-
-                self._last_discovery_time = time.monotonic()
 
         for old_client in old_clients:
             try:

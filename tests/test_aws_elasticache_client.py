@@ -352,16 +352,14 @@ def test_failed_node_entry_removed_after_check(failed_node_client: AWSElastiCach
     assert failed_node_client.get("key") == b"value"
 
 
-def test_refresh_skips_when_another_thread_refreshed(
+def refresh_in_threads(
     monkeypatch: MonkeyPatch,
-    mock_discovery: Callable[[list[tuple[str, int]]], None],
-) -> None:
-    mock_discovery([NODE_1])
-    client = make_client(use_pooling=True)
+    client: AWSElastiCacheClient,
+    second_starts_during_discovery: bool,
+) -> tuple[list[threading.Thread], list[threading.Thread]]:
     discovering = threading.Event()
     release = threading.Event()
-    waiting = threading.Event()
-    calls = []
+    calls: list[threading.Thread] = []
 
     def config_get_cluster(self: Any) -> list[tuple[str, int]]:
         calls.append(threading.current_thread())
@@ -375,25 +373,56 @@ def test_refresh_skips_when_another_thread_refreshed(
     )
     first = threading.Thread(target=client._refresh_clients, kwargs={"force": True})
     second = threading.Thread(target=client._refresh_clients, kwargs={"force": True})
+    requested = {first: threading.Event(), second: threading.Event()}
     monotonic = time.monotonic
 
     def wrapped_monotonic() -> float:
         value = monotonic()
-        if threading.current_thread() is second:
-            waiting.set()
+        if threading.current_thread() in requested:
+            requested[threading.current_thread()].set()
         return value
 
     monkeypatch.setattr(time, "monotonic", wrapped_monotonic)
 
-    first.start()
-    assert discovering.wait(1)
-    second.start()
-    assert waiting.wait(1)
+    if second_starts_during_discovery:
+        first.start()
+        assert discovering.wait(1)
+        second.start()
+        assert requested[second].wait(1)
+    else:
+        with client._discovery_lock:
+            first.start()
+            second.start()
+            assert requested[first].wait(1)
+            assert requested[second].wait(1)
     release.set()
     first.join(1)
     second.join(1)
+    return [first, second], calls
 
-    assert calls == [first]
+
+def test_refresh_skips_when_discovery_started_after_request(
+    monkeypatch: MonkeyPatch,
+    mock_discovery: Callable[[list[tuple[str, int]]], None],
+) -> None:
+    mock_discovery([NODE_1])
+    client = make_client(use_pooling=True)
+
+    threads, calls = refresh_in_threads(monkeypatch, client, second_starts_during_discovery=False)
+
+    assert len(calls) == 1
+
+
+def test_refresh_runs_again_when_requested_during_discovery(
+    monkeypatch: MonkeyPatch,
+    mock_discovery: Callable[[list[tuple[str, int]]], None],
+) -> None:
+    mock_discovery([NODE_1])
+    client = make_client(use_pooling=True)
+
+    threads, calls = refresh_in_threads(monkeypatch, client, second_starts_during_discovery=True)
+
+    assert calls == threads
 
 
 def test_get_client_is_not_blocked_by_discovery(
