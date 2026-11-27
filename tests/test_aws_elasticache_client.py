@@ -1,9 +1,11 @@
+import threading
 import time
 from typing import Any, Callable
 from unittest.mock import Mock
 
 import pytest
 from pymemcache.client import Client, PooledClient
+from pymemcache.exceptions import MemcacheIllegalInputError
 from pytest import MonkeyPatch
 
 from django_elastipymemcache.client import AWSElastiCacheClient
@@ -137,3 +139,149 @@ def test_disconnect_all_logs_configuration_endpoint_close_failure(
 
     endpoint_client.close.assert_called_once_with(force=True)
     assert "Exception occurred while closing configuration endpoint client" in caplog.text
+
+
+NODE_1 = ("10.0.0.1", 11211)
+NODE_2 = ("10.0.0.2", 11211)
+KEYS = [f"key{i}" for i in range(20)]
+
+
+@pytest.fixture
+def two_node_client(mock_discovery: Callable[[list[tuple[str, int]]], None]) -> AWSElastiCacheClient:
+    mock_discovery([NODE_1, NODE_2])
+    client = make_client(use_pooling=True, ignore_exc=True, socket_module=FakeSocketModule([b"END\r\n"]))
+    mock_discovery([NODE_2])
+    return client
+
+
+def remove_node_during_get_node(monkeypatch: MonkeyPatch, client: AWSElastiCacheClient) -> None:
+    get_node = client.hasher.get_node
+
+    def wrapped(key: str) -> str:
+        node = get_node(key)
+        if node == "10.0.0.1:11211" and "10.0.0.1:11211" in client.clients:
+            client._refresh_clients(force=True)
+        return node
+
+    monkeypatch.setattr(client.hasher, "get_node", wrapped)
+
+
+def remove_node_after_batching(monkeypatch: MonkeyPatch, client: AWSElastiCacheClient) -> None:
+    get_client = client._get_client
+    calls = []
+
+    def wrapped(key: str) -> Client | PooledClient:
+        result = get_client(key)
+        calls.append(key)
+        if len(calls) == len(KEYS):
+            client._refresh_clients(force=True)
+        return result
+
+    monkeypatch.setattr(client, "_get_client", wrapped)
+
+
+def test_get_when_node_removed_during_lookup(monkeypatch: MonkeyPatch, two_node_client: AWSElastiCacheClient) -> None:
+    key = next(k for k in KEYS if two_node_client.hasher.get_node(k) == "10.0.0.1:11211")
+    remove_node_during_get_node(monkeypatch, two_node_client)
+
+    assert two_node_client.get(key) is None
+    assert set(two_node_client.clients) == {"10.0.0.2:11211"}
+
+
+@pytest.mark.parametrize("remove_node", [remove_node_during_get_node, remove_node_after_batching])
+def test_get_multi_when_node_removed(
+    monkeypatch: MonkeyPatch,
+    two_node_client: AWSElastiCacheClient,
+    remove_node: Callable[[MonkeyPatch, AWSElastiCacheClient], None],
+) -> None:
+    remove_node(monkeypatch, two_node_client)
+
+    assert two_node_client.get_multi(KEYS) == {}
+    assert set(two_node_client.clients) == {"10.0.0.2:11211"}
+
+
+@pytest.mark.parametrize("remove_node", [remove_node_during_get_node, remove_node_after_batching])
+def test_set_multi_when_node_removed(
+    monkeypatch: MonkeyPatch,
+    two_node_client: AWSElastiCacheClient,
+    remove_node: Callable[[MonkeyPatch, AWSElastiCacheClient], None],
+) -> None:
+    remove_node(monkeypatch, two_node_client)
+
+    assert two_node_client.set_multi(dict.fromkeys(KEYS, "value")) == []
+    assert set(two_node_client.clients) == {"10.0.0.2:11211"}
+
+
+def test_multi_aliases_use_overridden_methods() -> None:
+    assert vars(AWSElastiCacheClient)["get_multi"] is vars(AWSElastiCacheClient)["get_many"]
+    assert vars(AWSElastiCacheClient)["set_multi"] is vars(AWSElastiCacheClient)["set_many"]
+
+
+def test_get_multi_raises_when_data_node_is_down(monkeypatch: MonkeyPatch) -> None:
+    config_get_cluster = Mock(return_value=[NODE_1])
+    monkeypatch.setattr(
+        "django_elastipymemcache.client._ConfigurationEndpointClient.config_get_cluster",
+        config_get_cluster,
+    )
+    socket_module = FakeSocketModule([])
+    socket_module.socket = Mock(side_effect=ConnectionRefusedError)  # type: ignore[method-assign]
+    client = make_client(use_pooling=True, socket_module=socket_module)
+    config_get_cluster.reset_mock()
+
+    with pytest.raises(ConnectionRefusedError):
+        client.get_multi(["key"])
+    assert config_get_cluster.call_count == 0
+
+
+def test_get_multi_raises_for_illegal_key(monkeypatch: MonkeyPatch) -> None:
+    config_get_cluster = Mock(return_value=[NODE_1])
+    monkeypatch.setattr(
+        "django_elastipymemcache.client._ConfigurationEndpointClient.config_get_cluster",
+        config_get_cluster,
+    )
+    client = make_client(use_pooling=True)
+    config_get_cluster.reset_mock()
+
+    with pytest.raises(MemcacheIllegalInputError):
+        client.get_multi(["bad key"])
+    assert config_get_cluster.call_count == 3
+
+
+def test_flush_all_when_node_removed(monkeypatch: MonkeyPatch, two_node_client: AWSElastiCacheClient) -> None:
+    safely_run_func = two_node_client._safely_run_func
+
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        two_node_client._refresh_clients(force=True)
+        return safely_run_func(*args, **kwargs)
+
+    monkeypatch.setattr(two_node_client, "_safely_run_func", wrapped)
+
+    two_node_client.flush_all()
+
+    assert set(two_node_client.clients) == {"10.0.0.2:11211"}
+
+
+def test_remove_server_waits_for_retry_dead(mock_discovery: Callable[[list[tuple[str, int]]], None]) -> None:
+    mock_discovery([NODE_1, NODE_2])
+    client = make_client(use_pooling=True, ignore_exc=True, dead_timeout=0)
+    client.hasher.remove_node("10.0.0.1:11211")
+    client._failed_clients[NODE_2] = {"failed_time": 0.0, "attempts": 0}
+    removed = threading.Event()
+
+    def remove_server() -> None:
+        client.remove_server(NODE_2)
+        removed.set()
+
+    class IteratingDict(dict[tuple[str, int], float]):
+        def items(self) -> Any:
+            for item in super().items():
+                yield item
+                threading.Thread(target=remove_server).start()
+                removed.wait(0.1)
+
+    client._dead_clients = IteratingDict({NODE_1: 0.0})
+
+    client._retry_dead()
+
+    assert removed.wait(1)
+    assert set(client._dead_clients) == {NODE_2}

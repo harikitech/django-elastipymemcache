@@ -280,7 +280,43 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
     @_retry_refresh_clients
     def _get_client(self, key: str) -> Client | PooledClient:
         self._refresh_clients()
-        return super()._get_client(key)
+        try:
+            return super()._get_client(key)
+        except KeyError as e:
+            raise MemcacheError(f"ElastiCache discovery: node removed during lookup: {e}") from e
+
+    def _run_with_topology_retry(self, method: Callable[..., R], *args: Any, **kwargs: Any) -> R:
+        # Another thread may remove a node after the keys are batched; its refresh is done by the time we retry.
+        try:
+            return method(*args, **kwargs)
+        except KeyError:
+            pass
+        try:
+            return method(*args, **kwargs)
+        except KeyError as e:
+            raise MemcacheError(f"ElastiCache discovery: node removed during lookup: {e}") from e
+
+    def get_many(self, keys: Any, *args: Any, **kwargs: Any) -> dict[Any, Any]:
+        return self._run_with_topology_retry(super().get_many, keys, *args, **kwargs)
+
+    def set_many(self, values: Any, *args: Any, **kwargs: Any) -> list[Any]:
+        return self._run_with_topology_retry(super().set_many, values, *args, **kwargs)
+
+    # HashClient binds these aliases to its own methods.
+    get_multi = get_many
+    set_multi = set_many
+
+    def _retry_dead(self) -> None:
+        with self._topology_lock:
+            super()._retry_dead()
+
+    def flush_all(self, *args: Any, **kwargs: Any) -> None:
+        for client in list(self.clients.values()):
+            self._safely_run_func(client, client.flush_all, False, *args, **kwargs)
+
+    def quit(self) -> None:
+        for client in list(self.clients.values()):
+            self._safely_run_func(client, client.quit, False)
 
     def _close_clients(self) -> None:
         if self.use_pooling:
