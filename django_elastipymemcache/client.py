@@ -241,13 +241,13 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
         except Exception as e:
             logger.exception(f"Initial discovery failed: {e}")
 
-    def _discover_client_keys(self) -> set[str]:
+    def _discover_client_keys(self) -> set[str] | None:
         try:
             node = self._configuration_endpoint_client.config_get_cluster()
             return set(map(self._make_client_key, node))
         except MemcacheError:
             logger.warning("ElastiCache discovery: cluster discovery failed.")
-            return set()
+            return None
 
     def _refresh_clients(self, force: bool = False) -> None:
         if not force and not self._use_auto_discovery:
@@ -266,6 +266,8 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
 
             self._last_discovery_time = time.monotonic()
             new_keys = self._discover_client_keys()
+            if new_keys is None:
+                return
 
             with self._topology_lock:
                 current_keys = set(self.clients.keys())

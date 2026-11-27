@@ -565,3 +565,15 @@ def test_lookup_raises_when_node_is_still_missing(missing_node_client: AWSElasti
         missing_node_client.get_multi(KEYS)
     with pytest.raises(MemcacheError, match="node removed during lookup"):
         missing_node_client.set_multi(dict.fromkeys(KEYS, "value"))
+
+
+def test_failed_discovery_keeps_current_nodes(monkeypatch: MonkeyPatch, two_node_client: AWSElastiCacheClient) -> None:
+    monkeypatch.setattr(
+        "django_elastipymemcache.client._ConfigurationEndpointClient.config_get_cluster",
+        Mock(side_effect=MemcacheError("boom")),
+    )
+
+    two_node_client._refresh_clients(force=True)
+
+    assert set(two_node_client.clients) == {"10.0.0.1:11211", "10.0.0.2:11211"}
+    assert two_node_client._get_client("key") is not None
