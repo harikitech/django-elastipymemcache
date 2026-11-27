@@ -2,6 +2,7 @@ import itertools
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 from unittest.mock import Mock
 
@@ -409,7 +410,7 @@ def test_refresh_skips_when_discovery_started_after_request(
     mock_discovery([NODE_1])
     client = make_client(use_pooling=True)
 
-    threads, calls = refresh_in_threads(monkeypatch, client, second_starts_during_discovery=False)
+    _, calls = refresh_in_threads(monkeypatch, client, second_starts_during_discovery=False)
 
     assert len(calls) == 1
 
@@ -469,14 +470,10 @@ def test_refresh_and_failure_tracking_do_not_deadlock(
         lambda self: next(topologies),
     )
     two_node_client.dead_timeout = 0
-    errors: list[Exception] = []
 
     def repeat(func: Callable[[], None]) -> None:
         for _ in range(200):
-            try:
-                func()
-            except Exception as e:
-                errors.append(e)
+            func()
 
     def fail_node() -> None:
         two_node_client._mark_failed_server(NODE_1)
@@ -486,18 +483,17 @@ def test_refresh_and_failure_tracking_do_not_deadlock(
         two_node_client._last_dead_check_time = 0.0
         two_node_client._retry_dead()
 
-    threads = [
-        threading.Thread(target=repeat, args=(lambda: two_node_client._refresh_clients(force=True),)),
-        threading.Thread(target=repeat, args=(fail_node,)),
-        threading.Thread(target=repeat, args=(retry_dead,)),
-    ]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(5)
-
-    assert not any(thread.is_alive() for thread in threads)
-    assert errors == []
+    executor = ThreadPoolExecutor(max_workers=3)
+    try:
+        futures = [
+            executor.submit(repeat, lambda: two_node_client._refresh_clients(force=True)),
+            executor.submit(repeat, fail_node),
+            executor.submit(repeat, retry_dead),
+        ]
+        for future in futures:
+            future.result(timeout=5)
+    finally:
+        executor.shutdown(wait=False)
 
 
 def test_get_does_not_rediscover_when_node_removed_during_lookup(
