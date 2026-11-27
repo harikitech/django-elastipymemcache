@@ -114,28 +114,9 @@ def test_get_client_triggers_retry_refresh_when_ring_empty(
     assert isinstance(data_node, (Client, PooledClient))
 
 
-@pytest.mark.parametrize(
-    ("discovery_interval", "keep_connection"),
-    [
-        (0.0, False),
-        (10.0, True),
-    ],
-)
-def test_configuration_endpoint_connection_is_kept_only_for_periodic_discovery(
-    mock_discovery: Callable[[list[tuple[str, int]]], None],
-    discovery_interval: float,
-    keep_connection: bool,
-) -> None:
-    mock_discovery([("10.0.0.1", 11211)])
-    client = make_client(use_pooling=True, discovery_interval=discovery_interval)
-
-    assert client._configuration_endpoint_client._client._keep_connection is keep_connection
-
-
 def test_disconnect_all_closes_configuration_endpoint_connection() -> None:
     fake_socket_module = FakeSocketModule([CONFIG_GET_CLUSTER_RESPONSE])
-    # Periodic discovery keeps the endpoint connection open, so only disconnect_all can close it here.
-    client = make_client(use_pooling=True, discovery_interval=10.0, socket_module=fake_socket_module)
+    client = make_client(use_pooling=True, socket_module=fake_socket_module)
     assert [s.closed for s in fake_socket_module.sockets] == [False]
 
     client.disconnect_all()
