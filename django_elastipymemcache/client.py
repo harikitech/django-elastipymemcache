@@ -145,6 +145,8 @@ class _ConfigurationEndpointClient:
         return self._parse_config_get_cluster_response(response)
 
 
+_EMPTY_RING_DISCOVERY_DELAY = 1.0
+
 P = ParamSpec("P")
 R = TypeVar("R")
 
@@ -283,7 +285,7 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
             logger.warning("ElastiCache discovery: cluster discovery failed.")
             return None
 
-    def _refresh_clients(self, force: bool = False) -> None:
+    def _refresh_clients(self, force: bool = False, blocking: bool = True) -> None:
         if not force and not self._use_auto_discovery:
             return
 
@@ -293,7 +295,10 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
 
         old_clients: list[Client | PooledClient] = []
 
-        with self._discovery_lock:
+        if not self._discovery_lock.acquire(blocking=blocking):
+            return
+
+        try:
             if self._last_discovery_time > now:
                 # Another thread started a discovery while this one was waiting for the lock.
                 return
@@ -323,6 +328,8 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
                 for client_key in new_keys - current_keys:
                     host, port = client_key.split(":", 1)
                     super().add_server((host, int(port)))
+        finally:
+            self._discovery_lock.release()
 
         for old_client in old_clients:
             try:
@@ -330,9 +337,22 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
             except Exception:
                 logger.exception("Failed to close during topology refresh")
 
+    def _refresh_empty_ring(self) -> None:
+        delay = self._discovery_retry_delay or _EMPTY_RING_DISCOVERY_DELAY
+        if time.monotonic() - self._last_discovery_time < delay:
+            return
+
+        try:
+            self._refresh_clients(force=True, blocking=False)
+        except (MemcacheError, OSError) as e:
+            logger.debug("Discovery refresh failed for the empty ring: %r", e)
+
     @_retry_refresh_clients
     def _get_client(self, key: str) -> Client | PooledClient | None:
-        self._refresh_clients()
+        if self.clients:
+            self._refresh_clients()
+        else:
+            self._refresh_empty_ring()
         return self._run_with_topology_retry(None, super()._get_client, key)
 
     def _run_with_topology_retry(self, default: Any, method: Callable[..., R], *args: Any, **kwargs: Any) -> R:

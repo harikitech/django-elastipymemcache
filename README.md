@@ -101,7 +101,8 @@ The backend accepts a combination of **ElastiPymemcache-specific options** and
 - According to the official Amazon ElastiCache documentation, **auto-discovery must be enabled to support vertical scaling**.
   <https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/Scaling-self-designed.mem-heading.html>
 - Auto-discovery also runs **on demand** when the ring is empty, even if `discovery_interval` is `0.0`.
-  This helps recover after scale events.
+  It runs at most once per `discovery_retry_delay` (1 second if unset), and lookups do not wait for a discovery
+  that is already running. This helps recover after scale events or a failed initial discovery.
 - If you use TLS, pass the appropriate `tls_context` through `OPTIONS` (this is a pymemcache option)
   and ensure your ElastiCache cluster supports TLS.
 - When `use_pooling` is enabled, the client and its connection pools are **shared per process** and reused across requests.

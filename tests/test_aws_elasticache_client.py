@@ -613,3 +613,73 @@ def test_fork_resets_pooled_clients(two_node_client: AWSElastiCacheClient) -> No
         os._exit(0 if ok else 1)
 
     assert os.waitpid(pid, 0)[1] == 0
+
+
+@pytest.fixture
+def empty_ring_client(monkeypatch: MonkeyPatch, request: pytest.FixtureRequest) -> AWSElastiCacheClient:
+    monkeypatch.setattr(
+        "django_elastipymemcache.client._ConfigurationEndpointClient.config_get_cluster",
+        Mock(side_effect=getattr(request, "param", OSError("boom"))),
+    )
+    client = make_client(use_pooling=True, ignore_exc=True)
+    assert client.clients == {}
+    return client
+
+
+@pytest.mark.parametrize("empty_ring_client", [OSError("boom"), MemcacheError("boom")], indirect=True)
+def test_empty_ring_recovers_with_ignore_exc(
+    mock_discovery: Callable[[list[tuple[str, int]]], None],
+    empty_ring_client: AWSElastiCacheClient,
+) -> None:
+    mock_discovery([NODE_1])
+
+    assert empty_ring_client._get_client("key") is None
+
+    empty_ring_client._last_discovery_time -= 1.0
+
+    assert empty_ring_client._get_client("key") is empty_ring_client.clients["10.0.0.1:11211"]
+
+
+def test_empty_ring_discovery_is_rate_limited(
+    monkeypatch: MonkeyPatch, empty_ring_client: AWSElastiCacheClient
+) -> None:
+    discover = Mock(wraps=empty_ring_client._discover_client_keys)
+    monkeypatch.setattr(empty_ring_client, "_discover_client_keys", discover)
+    empty_ring_client._last_discovery_time -= 1.0
+
+    for _ in range(100):
+        assert empty_ring_client._get_client("key") is None
+
+    assert discover.call_count == 1
+
+
+def test_empty_ring_lookup_is_not_blocked_by_discovery(
+    monkeypatch: MonkeyPatch,
+    empty_ring_client: AWSElastiCacheClient,
+) -> None:
+    discovering = threading.Event()
+    release = threading.Event()
+
+    def config_get_cluster(self: Any) -> list[tuple[str, int]]:
+        discovering.set()
+        release.wait(5)
+        return []
+
+    monkeypatch.setattr(
+        "django_elastipymemcache.client._ConfigurationEndpointClient.config_get_cluster",
+        config_get_cluster,
+    )
+    refresh = threading.Thread(target=empty_ring_client._refresh_clients, kwargs={"force": True})
+    refresh.start()
+    try:
+        assert discovering.wait(1)
+        empty_ring_client._last_discovery_time = 0.0
+        clients: list[Client | PooledClient | None] = []
+        lookup = threading.Thread(target=lambda: clients.append(empty_ring_client._get_client("key")))
+        lookup.start()
+        lookup.join(0.5)
+
+        assert clients == [None]
+    finally:
+        release.set()
+        refresh.join(1)
