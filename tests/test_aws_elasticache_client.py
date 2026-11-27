@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 from pymemcache.client import Client, PooledClient
-from pymemcache.exceptions import MemcacheIllegalInputError
+from pymemcache.exceptions import MemcacheError, MemcacheIllegalInputError
 from pytest import MonkeyPatch
 
 from django_elastipymemcache.client import AWSElastiCacheClient
@@ -497,3 +497,71 @@ def test_refresh_and_failure_tracking_do_not_deadlock(
 
     assert not any(thread.is_alive() for thread in threads)
     assert errors == []
+
+
+def test_get_does_not_rediscover_when_node_removed_during_lookup(
+    monkeypatch: MonkeyPatch,
+    two_node_client: AWSElastiCacheClient,
+) -> None:
+    config_get_cluster = Mock(return_value=[NODE_2])
+    monkeypatch.setattr(
+        "django_elastipymemcache.client._ConfigurationEndpointClient.config_get_cluster",
+        config_get_cluster,
+    )
+    key = next(k for k in KEYS if two_node_client.hasher.get_node(k) == "10.0.0.1:11211")
+    remove_node_during_get_node(monkeypatch, two_node_client)
+
+    assert two_node_client.get(key) is None
+    assert config_get_cluster.call_count == 1
+
+
+def test_lookup_waits_for_topology_update(monkeypatch: MonkeyPatch, two_node_client: AWSElastiCacheClient) -> None:
+    key = next(k for k in KEYS if two_node_client.hasher.get_node(k) == "10.0.0.1:11211")
+    node = two_node_client.clients["10.0.0.2:11211"]
+    get = Mock(wraps=node.get)
+    monkeypatch.setattr(node, "get", get)
+    config_get_cluster = Mock(return_value=[NODE_2])
+    monkeypatch.setattr(
+        "django_elastipymemcache.client._ConfigurationEndpointClient.config_get_cluster",
+        config_get_cluster,
+    )
+    removing = threading.Event()
+
+    def remove_node() -> None:
+        with two_node_client._topology_lock:
+            two_node_client.clients.pop("10.0.0.1:11211")
+            removing.set()
+            time.sleep(0.1)
+            two_node_client.hasher.remove_node("10.0.0.1:11211")
+
+    thread = threading.Thread(target=remove_node)
+    thread.start()
+    assert removing.wait(1)
+
+    assert two_node_client.get(key) is None
+    thread.join(1)
+    assert get.call_args.args[0] == key
+    assert config_get_cluster.call_count == 0
+
+
+@pytest.fixture
+def missing_node_client(monkeypatch: MonkeyPatch, two_node_client: AWSElastiCacheClient) -> AWSElastiCacheClient:
+    monkeypatch.setattr(two_node_client.hasher, "get_node", lambda key: "10.0.0.9:11211")
+    return two_node_client
+
+
+def test_lookup_returns_default_when_node_is_still_missing(missing_node_client: AWSElastiCacheClient) -> None:
+    assert missing_node_client.get("key", "default") == "default"
+    assert missing_node_client.get_multi(KEYS) == {}
+    assert missing_node_client.set_multi(dict.fromkeys(KEYS, "value")) == KEYS
+
+
+def test_lookup_raises_when_node_is_still_missing(missing_node_client: AWSElastiCacheClient) -> None:
+    missing_node_client.ignore_exc = False
+
+    with pytest.raises(MemcacheError, match="node removed during lookup"):
+        missing_node_client.get("key")
+    with pytest.raises(MemcacheError, match="node removed during lookup"):
+        missing_node_client.get_multi(KEYS)
+    with pytest.raises(MemcacheError, match="node removed during lookup"):
+        missing_node_client.set_multi(dict.fromkeys(KEYS, "value"))
