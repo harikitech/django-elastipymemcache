@@ -8,6 +8,15 @@ from pytest import MonkeyPatch
 
 from django_elastipymemcache.client import AWSElastiCacheClient
 
+from .conftest import FakeSocketModule
+
+CONFIG_GET_CLUSTER_RESPONSE = (
+    b"CONFIG cluster 0 52\r\n"
+    b"1\n"
+    b"test.0001.use1.cache.amazonaws.com|10.0.0.1|11211\n\r\n"
+    b"END\r\n"
+)
+
 
 @pytest.fixture
 def mock_discovery(monkeypatch: MonkeyPatch) -> Callable[[list[tuple[str, int]]], None]:
@@ -124,3 +133,14 @@ def test_configuration_endpoint_connection_is_kept_only_for_periodic_discovery(
     client = make_client(use_pooling=True, discovery_interval=discovery_interval)
 
     assert client._configuration_endpoint_client._client._keep_connection is keep_connection
+
+
+def test_disconnect_all_closes_configuration_endpoint_connection() -> None:
+    fake_socket_module = FakeSocketModule([CONFIG_GET_CLUSTER_RESPONSE])
+    # Periodic discovery keeps the endpoint connection open, so only disconnect_all can close it here.
+    client = make_client(use_pooling=True, discovery_interval=10.0, socket_module=fake_socket_module)
+    assert [s.closed for s in fake_socket_module.sockets] == [False]
+
+    client.disconnect_all()
+
+    assert [s.closed for s in fake_socket_module.sockets] == [True]
