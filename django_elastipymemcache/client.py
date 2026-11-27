@@ -5,17 +5,19 @@ Copy from: https://github.com/pinterest/pymemcache/blob/master/pymemcache/client
 """
 
 import logging
+import os
 import random
 import re
 import threading
 import time
+import weakref
 from typing import Any, Callable, Concatenate, ParamSpec, TypeVar
 
 from django.utils.encoding import force_str
 from pymemcache import MemcacheUnknownCommandError
 from pymemcache.client import Client, PooledClient, RetryingClient
 from pymemcache.client.hash import HashClient
-from pymemcache.exceptions import MemcacheError
+from pymemcache.exceptions import MemcacheError, MemcacheIllegalInputError
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +84,10 @@ class _ConfigurationEndpointClient:
 
     close = _close_client
 
+    def reset_after_fork(self) -> None:
+        self._lock = threading.Lock()
+        self._client = None
+
     def _raw_config_get_cluster(self, client: Client | PooledClient) -> bytes:
         return bytes(
             client.raw_command(
@@ -139,8 +145,20 @@ class _ConfigurationEndpointClient:
         return self._parse_config_get_cluster_response(response)
 
 
+_EMPTY_RING_DISCOVERY_DELAY = 1.0
+
 P = ParamSpec("P")
 R = TypeVar("R")
+
+
+class _FailedClients(dict[Any, dict[str, Any]]):
+    # HashClient._safely_run_func and _safely_run_set_many check an entry and then read or pop it without a lock,
+    # so another thread may remove it in between.
+    def __missing__(self, key: Any) -> dict[str, Any]:
+        return {"failed_time": 0.0, "attempts": 0}
+
+    def pop(self, key: Any, default: Any = None) -> Any:
+        return super().pop(key, default)
 
 
 def _retry_refresh_clients(
@@ -157,6 +175,8 @@ def _retry_refresh_clients(
         for _ in range(self.retry_attempts + 1):
             try:
                 return method(self, *args, **kwargs)
+            except MemcacheIllegalInputError:
+                raise
             except (MemcacheError, OSError) as exc:
                 last_exception = exc
                 if getattr(self, "_discovery_retry_delay", 0.0) > 0.0:
@@ -170,6 +190,18 @@ def _retry_refresh_clients(
         raise last_exception
 
     return wrapped
+
+
+_pooled_clients: "weakref.WeakSet[AWSElastiCacheClient]" = weakref.WeakSet()
+
+
+def _reset_pooled_clients_after_fork() -> None:
+    for client in list(_pooled_clients):
+        client._reset_after_fork()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_pooled_clients_after_fork)
 
 
 class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
@@ -199,6 +231,7 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
             **kwargs,
         )
 
+        self._failed_clients = _FailedClients()
         self.configuration_endpoint: str = configuration_endpoint
         configuration_endpoint_client = _ConfigurationEndpointClient(
             configuration_endpoint,
@@ -223,21 +256,36 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
         )
         self._discovery_retry_delay = float(discovery_retry_delay)
         self._last_discovery_time: float = 0.0
-        self._topology_lock = threading.Lock()
+        self._discovery_lock = threading.Lock()
+        self._topology_lock = threading.RLock()
         try:
             self._refresh_clients(force=True)
         except Exception as e:
             logger.exception(f"Initial discovery failed: {e}")
 
-    def _discover_client_keys(self) -> set[str]:
+        if use_pooling:
+            _pooled_clients.add(self)
+
+    def _reset_after_fork(self) -> None:
+        # The child must not share locks or sockets with the parent, and must not close the parent's sockets.
+        self._discovery_lock = threading.Lock()
+        self._topology_lock = threading.RLock()
+        self._configuration_endpoint_client.reset_after_fork()
+        self._failed_clients.clear()
+        self._dead_clients.clear()
+        for client_key in self.clients:
+            host, port = client_key.split(":", 1)
+            super().add_server((host, int(port)))
+
+    def _discover_client_keys(self) -> set[str] | None:
         try:
             node = self._configuration_endpoint_client.config_get_cluster()
             return set(map(self._make_client_key, node))
         except MemcacheError:
             logger.warning("ElastiCache discovery: cluster discovery failed.")
-            return set()
+            return None
 
-    def _refresh_clients(self, force: bool = False) -> None:
+    def _refresh_clients(self, force: bool = False, blocking: bool = True) -> None:
         if not force and not self._use_auto_discovery:
             return
 
@@ -247,29 +295,41 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
 
         old_clients: list[Client | PooledClient] = []
 
-        with self._topology_lock:
-            current_keys = set(self.clients.keys())
+        if not self._discovery_lock.acquire(blocking=blocking):
+            return
+
+        try:
+            if self._last_discovery_time > now:
+                # Another thread started a discovery while this one was waiting for the lock.
+                return
+
+            self._last_discovery_time = time.monotonic()
             new_keys = self._discover_client_keys()
+            if new_keys is None:
+                return
 
-            # remove
-            for client_key in current_keys - new_keys:
-                old_client = self.clients.pop(client_key, None)
-                if old_client:
-                    old_clients.append(old_client)
+            with self._topology_lock:
+                current_keys = set(self.clients.keys())
 
-                self.hasher.remove_node(client_key)
+                # remove
+                for client_key in current_keys - new_keys:
+                    old_client = self.clients.pop(client_key, None)
+                    if old_client:
+                        old_clients.append(old_client)
 
-                host, port = client_key.split(":", 1)
-                server = (host, int(port))
-                self._failed_clients.pop(server, None)
-                self._dead_clients.pop(server, None)
+                    self.hasher.remove_node(client_key)
 
-            # add
-            for client_key in new_keys - current_keys:
-                host, port = client_key.split(":", 1)
-                super().add_server((host, int(port)))
+                    host, port = client_key.split(":", 1)
+                    server = (host, int(port))
+                    self._failed_clients.pop(server, None)
+                    self._dead_clients.pop(server, None)
 
-            self._last_discovery_time = now
+                # add
+                for client_key in new_keys - current_keys:
+                    host, port = client_key.split(":", 1)
+                    super().add_server((host, int(port)))
+        finally:
+            self._discovery_lock.release()
 
         for old_client in old_clients:
             try:
@@ -277,10 +337,83 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
             except Exception:
                 logger.exception("Failed to close during topology refresh")
 
+    def _refresh_empty_ring(self) -> None:
+        delay = self._discovery_retry_delay or _EMPTY_RING_DISCOVERY_DELAY
+        if time.monotonic() - self._last_discovery_time < delay:
+            return
+
+        try:
+            self._refresh_clients(force=True, blocking=False)
+        except (MemcacheError, OSError) as e:
+            logger.debug("Discovery refresh failed for the empty ring: %r", e)
+
     @_retry_refresh_clients
-    def _get_client(self, key: str) -> Client | PooledClient:
-        self._refresh_clients()
-        return super()._get_client(key)
+    def _get_client(self, key: str) -> Client | PooledClient | None:
+        if self.clients:
+            self._refresh_clients()
+        else:
+            self._refresh_empty_ring()
+        return self._run_with_topology_retry(None, super()._get_client, key)
+
+    def _run_with_topology_retry(self, default: Any, method: Callable[..., R], *args: Any, **kwargs: Any) -> R:
+        try:
+            return method(*args, **kwargs)
+        except KeyError:
+            # Another thread removed the node; wait until it has finished updating the topology.
+            with self._topology_lock:
+                pass
+        try:
+            return method(*args, **kwargs)
+        except KeyError as e:
+            if self.ignore_exc:
+                return default  # type: ignore[no-any-return]
+            raise MemcacheError(f"ElastiCache discovery: node removed during lookup: {e}") from e
+
+    def get_many(self, keys: Any, *args: Any, **kwargs: Any) -> dict[Any, Any]:
+        return self._run_with_topology_retry({}, super().get_many, keys, *args, **kwargs)
+
+    def set_many(self, values: Any, *args: Any, **kwargs: Any) -> list[Any]:
+        return self._run_with_topology_retry(list(values), super().set_many, values, *args, **kwargs)
+
+    # HashClient binds these aliases to its own methods.
+    get_multi = get_many
+    set_multi = set_many
+
+    def _retry_dead(self) -> None:
+        with self._topology_lock:
+            super()._retry_dead()
+
+    def add_server(self, server: Any, port: Any = None) -> None:
+        # HashClient._retry_dead replaces the client of a revived node without closing the old one.
+        old_client = self.clients.get(self._make_client_key(server if port is None else (server, port)))
+        super().add_server(server, port)
+        if old_client is not None:
+            try:
+                old_client.close()
+            except Exception:
+                logger.exception("Failed to close the replaced client")
+
+    def _mark_failed_server(self, server: Any) -> None:
+        with self._topology_lock:
+            if self._make_client_key(server) in self.clients:
+                super()._mark_failed_server(server)
+
+    def remove_server(self, server: Any, port: Any = None) -> None:
+        if port is not None:
+            server = (server, port)
+
+        with self._topology_lock:
+            # Skip nodes already removed by a refresh or marked dead by another thread.
+            if self._make_client_key(server) in self.clients and server not in self._dead_clients:
+                super().remove_server(server)
+
+    def flush_all(self, *args: Any, **kwargs: Any) -> None:
+        for client in list(self.clients.values()):
+            self._safely_run_func(client, client.flush_all, False, *args, **kwargs)
+
+    def quit(self) -> None:
+        for client in list(self.clients.values()):
+            self._safely_run_func(client, client.quit, False)
 
     def _close_clients(self) -> None:
         if self.use_pooling:
@@ -308,6 +441,10 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
         self._close_configuration_endpoint_client()
 
     def disconnect_all(self) -> None:
+        # Django calls this at the end of every request, which would empty the pool.
+        if self.use_pooling:
+            return
+
         # HashClient binds disconnect_all to its own close, so Django's cache close would skip the endpoint client.
         super().close()
         try:
