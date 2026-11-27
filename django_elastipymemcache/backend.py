@@ -1,4 +1,5 @@
 import logging
+import os
 import threading
 from typing import Any, Sequence
 
@@ -13,6 +14,15 @@ logger = logging.getLogger(__name__)
 # Django creates a cache instance per context under ASGI, so pooled clients are shared per process to reuse the pool.
 _shared_clients: list[tuple[str, dict[str, Any], AWSElastiCacheClient]] = []
 _shared_clients_lock = threading.Lock()
+
+
+def _reset_shared_clients_lock_after_fork() -> None:
+    global _shared_clients_lock
+    _shared_clients_lock = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_shared_clients_lock_after_fork)
 
 
 class ElastiPymemcache(PyMemcacheCache):

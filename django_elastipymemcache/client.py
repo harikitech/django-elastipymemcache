@@ -5,10 +5,12 @@ Copy from: https://github.com/pinterest/pymemcache/blob/master/pymemcache/client
 """
 
 import logging
+import os
 import random
 import re
 import threading
 import time
+import weakref
 from typing import Any, Callable, Concatenate, ParamSpec, TypeVar
 
 from django.utils.encoding import force_str
@@ -81,6 +83,10 @@ class _ConfigurationEndpointClient:
                     self._client = None
 
     close = _close_client
+
+    def reset_after_fork(self) -> None:
+        self._lock = threading.Lock()
+        self._client = None
 
     def _raw_config_get_cluster(self, client: Client | PooledClient) -> bytes:
         return bytes(
@@ -182,6 +188,18 @@ def _retry_refresh_clients(
     return wrapped
 
 
+_pooled_clients: "weakref.WeakSet[AWSElastiCacheClient]" = weakref.WeakSet()
+
+
+def _reset_pooled_clients_after_fork() -> None:
+    for client in list(_pooled_clients):
+        client._reset_after_fork()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_pooled_clients_after_fork)
+
+
 class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
     """ElastiCache-aware HashClient with"""
 
@@ -240,6 +258,20 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
             self._refresh_clients(force=True)
         except Exception as e:
             logger.exception(f"Initial discovery failed: {e}")
+
+        if use_pooling:
+            _pooled_clients.add(self)
+
+    def _reset_after_fork(self) -> None:
+        # The child must not share locks or sockets with the parent, and must not close the parent's sockets.
+        self._discovery_lock = threading.Lock()
+        self._topology_lock = threading.RLock()
+        self._configuration_endpoint_client.reset_after_fork()
+        self._failed_clients.clear()
+        self._dead_clients.clear()
+        for client_key in self.clients:
+            host, port = client_key.split(":", 1)
+            super().add_server((host, int(port)))
 
     def _discover_client_keys(self) -> set[str] | None:
         try:

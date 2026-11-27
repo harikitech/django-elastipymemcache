@@ -1,4 +1,5 @@
 import itertools
+import os
 import threading
 import time
 from typing import Any, Callable
@@ -593,3 +594,26 @@ def test_retry_dead_closes_replaced_client(monkeypatch: MonkeyPatch, two_node_cl
     assert two_node_client.clients["10.0.0.1:11211"] is not old_client
     assert "10.0.0.1:11211" in two_node_client.hasher.nodes
     close.assert_called_once_with()
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
+def test_fork_resets_pooled_clients(two_node_client: AWSElastiCacheClient) -> None:
+    two_node_client.get_multi(KEYS)
+    sockets = two_node_client.default_kwargs["socket_module"].sockets
+    assert sockets
+    parent_clients = dict(two_node_client.clients)
+    parent_locks = (two_node_client._discovery_lock, two_node_client._topology_lock)
+
+    pid = os.fork()
+    if pid == 0:
+        ok = (
+            set(two_node_client.clients) == set(parent_clients)
+            and all(two_node_client.clients[key] is not client for key, client in parent_clients.items())
+            and two_node_client._discovery_lock is not parent_locks[0]
+            and two_node_client._topology_lock is not parent_locks[1]
+            and not any(s.closed for s in sockets)
+            and two_node_client.get_multi(KEYS) == {}
+        )
+        os._exit(0 if ok else 1)
+
+    assert os.waitpid(pid, 0)[1] == 0
