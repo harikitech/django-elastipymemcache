@@ -306,3 +306,11 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
     def close(self) -> None:
         self._close_clients()
         self._close_configuration_endpoint_client()
+
+    def disconnect_all(self) -> None:
+        # HashClient binds disconnect_all to its own close, so Django's cache close would skip the endpoint client.
+        super().close()
+        try:
+            self._configuration_endpoint_client.close(force=True)
+        except Exception:
+            logger.warning("Exception occurred while closing configuration endpoint client", exc_info=True)
