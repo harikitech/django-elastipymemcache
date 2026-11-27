@@ -329,6 +329,16 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
         with self._topology_lock:
             super()._retry_dead()
 
+    def add_server(self, server: Any, port: Any = None) -> None:
+        # HashClient._retry_dead replaces the client of a revived node without closing the old one.
+        old_client = self.clients.get(self._make_client_key(server if port is None else (server, port)))
+        super().add_server(server, port)
+        if old_client is not None:
+            try:
+                old_client.close()
+            except Exception:
+                logger.exception("Failed to close the replaced client")
+
     def _mark_failed_server(self, server: Any) -> None:
         with self._topology_lock:
             if self._make_client_key(server) in self.clients:

@@ -577,3 +577,19 @@ def test_failed_discovery_keeps_current_nodes(monkeypatch: MonkeyPatch, two_node
 
     assert set(two_node_client.clients) == {"10.0.0.1:11211", "10.0.0.2:11211"}
     assert two_node_client._get_client("key") is not None
+
+
+def test_retry_dead_closes_replaced_client(monkeypatch: MonkeyPatch, two_node_client: AWSElastiCacheClient) -> None:
+    old_client = two_node_client.clients["10.0.0.1:11211"]
+    close = Mock(wraps=old_client.close)
+    monkeypatch.setattr(old_client, "close", close)
+    two_node_client._failed_clients[NODE_1] = {"failed_time": 0.0, "attempts": 2}
+    two_node_client.remove_server(NODE_1)
+    two_node_client.dead_timeout = 0
+    two_node_client._last_dead_check_time = 0.0
+
+    two_node_client._retry_dead()
+
+    assert two_node_client.clients["10.0.0.1:11211"] is not old_client
+    assert "10.0.0.1:11211" in two_node_client.hasher.nodes
+    close.assert_called_once_with()
