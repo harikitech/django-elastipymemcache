@@ -138,3 +138,10 @@ def test_disconnect_all_logs_configuration_endpoint_close_failure(
 
     endpoint_client.close.assert_called_once_with(force=True)
     assert "Exception occurred while closing configuration endpoint client" in caplog.text
+
+
+def test_keep_endpoint_connection_false_closes_configuration_endpoint_connection() -> None:
+    fake_socket_module = FakeSocketModule([CONFIG_GET_CLUSTER_RESPONSE])
+    make_client(use_pooling=True, keep_endpoint_connection=False, socket_module=fake_socket_module)
+
+    assert [s.closed for s in fake_socket_module.sockets] == [True]

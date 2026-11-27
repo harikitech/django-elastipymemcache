@@ -91,11 +91,12 @@ The backend accepts a combination of **ElastiPymemcache-specific options** and
 
 ### ElastiPymemcache-specific options
 
-| Option                  | Type  | Default | Description                                                        |
-| ----------------------- | ----- | ------- | ------------------------------------------------------------------ |
-| `discovery_interval`    | float | `0.0`   | Periodic auto-discovery interval in seconds. Set `0.0` to disable. |
-| `discovery_retry_delay` | float | `0.0`   | Delay (seconds) before retrying discovery after failure.           |
-| `use_vpc_ip_address`    | bool  | `True`  | Prefer VPC private IPs over DNS hostnames (recommended on AWS).    |
+| Option                     | Type  | Default | Description                                                        |
+| -------------------------- | ----- | ------- | ------------------------------------------------------------------ |
+| `discovery_interval`       | float | `0.0`   | Periodic auto-discovery interval in seconds. Set `0.0` to disable. |
+| `discovery_retry_delay`    | float | `0.0`   | Delay (seconds) before retrying discovery after failure.           |
+| `use_vpc_ip_address`       | bool  | `True`  | Prefer VPC private IPs over DNS hostnames (recommended on AWS).    |
+| `keep_endpoint_connection` | bool  | `True`  | Keep the endpoint connection open between queries (pooling only).  |
 
 ### Notes
 
@@ -105,6 +106,10 @@ The backend accepts a combination of **ElastiPymemcache-specific options** and
   This helps recover after scale events.
 - If you use TLS, pass the appropriate `tls_context` through `OPTIONS` (this is a pymemcache option)
   and ensure your ElastiCache cluster supports TLS.
+- Under ASGI, Django creates a new cache client for each request that uses the cache and does not close it.
+  With `use_pooling`, the configuration endpoint connection of each client stays open until the client is
+  garbage collected. Set `keep_endpoint_connection` to `False` under ASGI. Keep the default `True` for
+  long-running processes such as Celery workers, so that periodic discovery reuses the connection.
 
 ## Notice
 

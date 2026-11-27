@@ -87,3 +87,36 @@ def test_parse_errors_via_raw_command(payload: bytes) -> None:
 
     with pytest.raises(MemcacheError):
         client.config_get_cluster()
+
+
+def _pooled_client(
+    socket_module: FakeSocketModule,
+    keep_connection: bool,
+) -> _ConfigurationEndpointClient:
+    return _ConfigurationEndpointClient(
+        configuration_endpoint="config.use1.cache.amazonaws.com:11211",
+        default_kwargs={
+            "socket_module": socket_module,
+        },
+        use_pooling=True,
+        keep_connection=keep_connection,
+    )
+
+
+def test_pooled_connection_is_closed_when_not_kept() -> None:
+    fake_socket_module = FakeSocketModule([EXAMPLE_RESPONSE])
+    client = _pooled_client(fake_socket_module, keep_connection=False)
+
+    client.config_get_cluster()
+
+    assert [s.closed for s in fake_socket_module.sockets] == [True]
+
+
+def test_pooled_connection_is_reused_when_kept() -> None:
+    fake_socket_module = FakeSocketModule([EXAMPLE_RESPONSE, EXAMPLE_RESPONSE])
+    client = _pooled_client(fake_socket_module, keep_connection=True)
+
+    client.config_get_cluster()
+    client.config_get_cluster()
+
+    assert [s.closed for s in fake_socket_module.sockets] == [False]

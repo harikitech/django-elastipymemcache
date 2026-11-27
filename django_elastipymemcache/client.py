@@ -39,6 +39,7 @@ class _ConfigurationEndpointClient:
         default_kwargs: dict[str, Any] | None = None,
         use_pooling: bool = False,
         use_vpc_ip_address: bool = True,
+        keep_connection: bool = True,
     ) -> None:
         self.configuration_endpoint = configuration_endpoint
         host, port = self.configuration_endpoint.rsplit(":", 1)
@@ -46,6 +47,7 @@ class _ConfigurationEndpointClient:
 
         self._default_kwargs = default_kwargs or {}
         self._use_pooling = bool(use_pooling)
+        self._keep_connection = bool(keep_connection)
         self._use_vpc_ip_address = use_vpc_ip_address
 
         self._lock = threading.Lock()
@@ -134,7 +136,7 @@ class _ConfigurationEndpointClient:
             self._close_client(force=True)
             raise
         else:
-            self._close_client()
+            self._close_client(force=not self._keep_connection)
 
         return self._parse_config_get_cluster_response(response)
 
@@ -185,6 +187,7 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
         use_vpc_ip_address: bool = True,
         discovery_interval: float | int = 0.0,
         discovery_retry_delay: float | int = 0.0,
+        keep_endpoint_connection: bool = True,
         **kwargs: Any,
     ) -> None:
         if not _AWS_CONFIGURATION_ENDPOINT_PATTERN.fullmatch(configuration_endpoint):
@@ -205,6 +208,7 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
             default_kwargs=self.default_kwargs,
             use_pooling=use_pooling,
             use_vpc_ip_address=use_vpc_ip_address,
+            keep_connection=keep_endpoint_connection,
         )
 
         self._configuration_endpoint_client = RetryingClient(
