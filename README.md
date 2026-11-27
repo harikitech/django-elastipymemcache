@@ -56,7 +56,6 @@ CACHES = {
         "OPTIONS": {
             # Enable pooling for both config endpoint and data nodes
             "use_pooling": True,
-            "max_pool_size": 50,
             "pool_idle_timeout": 30,
             "connect_timeout": 0.3,
             "timeout": 0.5,
@@ -105,6 +104,11 @@ The backend accepts a combination of **ElastiPymemcache-specific options** and
   This helps recover after scale events.
 - If you use TLS, pass the appropriate `tls_context` through `OPTIONS` (this is a pymemcache option)
   and ensure your ElastiCache cluster supports TLS.
+- When `use_pooling` is enabled, the client and its connection pools are **shared per process** and reused across requests.
+- `max_pool_size` limits concurrent commands **per process per node**. Exceeding it raises `RuntimeError` instead of waiting
+  (a cache miss with `ignore_exc=True`), so leave it unset unless needed.
+- Do not access the cache before workers are forked (e.g. gunicorn `--preload`).
+- Without `use_pooling`, Django 5.2 under ASGI leaves connections open until garbage collection.
 
 ## Notice
 

@@ -308,6 +308,10 @@ class AWSElastiCacheClient(HashClient):  # type: ignore[misc]
         self._close_configuration_endpoint_client()
 
     def disconnect_all(self) -> None:
+        # Django calls this at the end of every request, which would empty the pool.
+        if self.use_pooling:
+            return
+
         # HashClient binds disconnect_all to its own close, so Django's cache close would skip the endpoint client.
         super().close()
         try:

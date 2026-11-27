@@ -1,4 +1,4 @@
-from typing import Callable
+from typing import Any, Callable
 from unittest.mock import Mock, patch
 
 import pytest
@@ -90,3 +90,42 @@ def test_failed_to_connect_servers(monkeypatch: MonkeyPatch) -> None:
 
     client = backend._cache._get_client("test")
     assert client is not None
+
+
+@pytest.fixture
+def shared_clients(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr("django_elastipymemcache.backend._shared_clients", [])
+
+
+@pytest.mark.usefixtures("shared_clients")
+def test_pooled_client_is_shared_between_instances(
+    mock_discovery: Callable[[list[tuple[str, int]]], None],
+) -> None:
+    mock_discovery([("10.0.0.1", 11211)])
+    params = {"OPTIONS": {"use_pooling": True}}
+
+    first = ElastiPymemcache("test.0000.use1.cache.amazonaws.com:11211", params)
+    second = ElastiPymemcache("test.0000.use1.cache.amazonaws.com:11211", params)
+
+    assert first._cache is second._cache
+
+
+@pytest.mark.usefixtures("shared_clients")
+@pytest.mark.parametrize(
+    ("first_options", "second_options"),
+    [
+        ({"use_pooling": False}, {"use_pooling": False}),
+        ({"use_pooling": True}, {"use_pooling": True, "max_pool_size": 10}),
+    ],
+)
+def test_client_is_not_shared(
+    mock_discovery: Callable[[list[tuple[str, int]]], None],
+    first_options: dict[str, Any],
+    second_options: dict[str, Any],
+) -> None:
+    mock_discovery([("10.0.0.1", 11211)])
+
+    first = ElastiPymemcache("test.0000.use1.cache.amazonaws.com:11211", {"OPTIONS": first_options})
+    second = ElastiPymemcache("test.0000.use1.cache.amazonaws.com:11211", {"OPTIONS": second_options})
+
+    assert first._cache is not second._cache

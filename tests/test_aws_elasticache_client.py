@@ -114,14 +114,13 @@ def test_get_client_triggers_retry_refresh_when_ring_empty(
     assert isinstance(data_node, (Client, PooledClient))
 
 
-def test_disconnect_all_closes_configuration_endpoint_connection() -> None:
+def test_disconnect_all_keeps_pooled_connections() -> None:
     fake_socket_module = FakeSocketModule([CONFIG_GET_CLUSTER_RESPONSE])
     client = make_client(use_pooling=True, socket_module=fake_socket_module)
-    assert [s.closed for s in fake_socket_module.sockets] == [False]
 
     client.disconnect_all()
 
-    assert [s.closed for s in fake_socket_module.sockets] == [True]
+    assert [s.closed for s in fake_socket_module.sockets] == [False]
 
 
 def test_disconnect_all_logs_configuration_endpoint_close_failure(
