@@ -122,3 +122,19 @@ def test_disconnect_all_closes_configuration_endpoint_connection() -> None:
     client.disconnect_all()
 
     assert [s.closed for s in fake_socket_module.sockets] == [True]
+
+
+def test_disconnect_all_logs_configuration_endpoint_close_failure(
+    mock_discovery: Callable[[list[tuple[str, int]]], None],
+    monkeypatch: MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mock_discovery([("10.0.0.1", 11211)])
+    client = make_client()
+    endpoint_client = Mock(**{"close.side_effect": OSError("boom")})
+    monkeypatch.setattr(client, "_configuration_endpoint_client", endpoint_client)
+
+    client.disconnect_all()
+
+    endpoint_client.close.assert_called_once_with(force=True)
+    assert "Exception occurred while closing configuration endpoint client" in caplog.text
