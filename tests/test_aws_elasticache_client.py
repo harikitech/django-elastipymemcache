@@ -11,10 +11,7 @@ from django_elastipymemcache.client import AWSElastiCacheClient
 from .conftest import FakeSocketModule
 
 CONFIG_GET_CLUSTER_RESPONSE = (
-    b"CONFIG cluster 0 52\r\n"
-    b"1\n"
-    b"test.0001.use1.cache.amazonaws.com|10.0.0.1|11211\n\r\n"
-    b"END\r\n"
+    b"CONFIG cluster 0 52\r\n1\ntest.0001.use1.cache.amazonaws.com|10.0.0.1|11211\n\r\nEND\r\n"
 )
 
 
